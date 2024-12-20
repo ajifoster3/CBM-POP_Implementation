@@ -134,7 +134,7 @@ class CBMPopulationAgent(Node):
 
             # Q-learning update formula
             if gain>0:
-                self.reward=2
+                self.reward=-0.5
             elif gain==0:
                 self.reward=0
             else:
