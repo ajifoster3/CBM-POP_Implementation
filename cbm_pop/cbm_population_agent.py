@@ -17,7 +17,7 @@ from cbm_pop_interfaces.msg import Solution, Weights
 class CBMPopulationAgent(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_tasks, num_tsp_agents, num_iterations,
-                 num_solution_attempts, agent_id, node_name: str, cost_matrix,reward_matrix=None):
+                 num_solution_attempts, agent_id, node_name: str, cost_matrix):
         super().__init__(node_name)
         self.pop_size = pop_size
         self.eta = eta
@@ -64,7 +64,9 @@ class CBMPopulationAgent(Node):
         #Q_learning
         # Q_learning parameter
         self.lr=0.1 # RL learning Rate
-        self.reward_Matrix=reward_matrix # it will be same size  with weight_matrix
+        self.reward=0 # RL reward initial 0
+        self.new_reward=0 # RL tarafından secilecek. initial 0
+        self.gamma_decay=0.99 # it can be change interms of iteration
 
 
     def generate_population(self):
@@ -112,7 +114,7 @@ class CBMPopulationAgent(Node):
         self.previous_experience.append([condition, operator, gain])
         pass
 
-    def individual_learning(self):
+    def individual_learning_old(self):
         # Update weight matrix (if needed) based on learning (not fully implemented in this example)
         abs_gain = 0
         index_best_fitness = -1
@@ -120,7 +122,7 @@ class CBMPopulationAgent(Node):
             current_gain = abs_gain + self.previous_experience[i][2]
             if current_gain < abs_gain:
                 index_best_fitness = i
-            abs_gain += current_gain
+            abs_gain += current_gain  #Todo not understood
 
         # Get elements before index_best_fitness
         elements_before_best = self.previous_experience[:index_best_fitness+1] if index_best_fitness != -1 else []
@@ -129,10 +131,40 @@ class CBMPopulationAgent(Node):
         # This part of code will be chande
         for pair in condition_operator_pairs:
             self.weight_matrix.weights[pair[0].value][pair[1].value-1] += self.eta # TODO: Eta2 for beating coalition fitness
-            #self.weight_matrix.weights[pair[0].value][pair[1].value - 1] =  (1-self.lr)*self.weight_matrix.weights[pair[0].value][pair[1].value - 1] /
-            #self.lr*(Reward+decay*np.argmax())
 
         return self.weight_matrix.weights
+
+    #----------------------------------------------------------------------------
+    def individual_learning(self):
+        """
+        Updates the weight matrix (Q(s, a)) using the Q-learning formula.
+        :return: Updated weight matrix
+        """
+        for experience in self.previous_experience:
+            condition, operator, gain = experience
+
+            # Current Q value
+            current_q = self.weight_matrix.weights[condition.value][operator.value - 1]
+
+            # Estimate future rewards (no explicit next_state, assume single-step Q-learning)
+            max_next_q = max(
+                self.weight_matrix.weights[condition.value])  # Max Q for current state (proxy for next state)
+
+            # Q-learning update formula
+            if gain>0:
+                self.reward=2
+            elif gain==0:
+                self.reward=0
+            else:
+                self.reward=1
+
+            updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
+
+            # Update weight matrix
+            self.weight_matrix.weights[condition.value][operator.value - 1] = updated_q
+
+        return self.weight_matrix.weights
+    #------------------------------------------------------------------------------------------------
 
 
     def mimetism_learning(self, received_weights, rho):
