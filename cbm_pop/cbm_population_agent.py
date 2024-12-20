@@ -114,25 +114,7 @@ class CBMPopulationAgent(Node):
         self.previous_experience.append([condition, operator, gain])
         pass
 
-    def individual_learning_old(self):
-        # Update weight matrix (if needed) based on learning (not fully implemented in this example)
-        abs_gain = 0
-        index_best_fitness = -1
-        for i in range(len(self.previous_experience)):
-            current_gain = abs_gain + self.previous_experience[i][2]
-            if current_gain < abs_gain:
-                index_best_fitness = i
-            abs_gain += current_gain  #Todo not understood
 
-        # Get elements before index_best_fitness
-        elements_before_best = self.previous_experience[:index_best_fitness+1] if index_best_fitness != -1 else []
-        condition_operator_pairs = [(item[0], item[1]) for item in elements_before_best]
-        condition_operator_pairs = list(set(condition_operator_pairs))
-        # This part of code will be chande
-        for pair in condition_operator_pairs:
-            self.weight_matrix.weights[pair[0].value][pair[1].value-1] += self.eta # TODO: Eta2 for beating coalition fitness
-
-        return self.weight_matrix.weights
 
     #----------------------------------------------------------------------------
     def individual_learning(self):
@@ -297,7 +279,7 @@ class CBMPopulationAgent(Node):
             self.di_cycle_count = 0
 
         self.iteration_count += 1
-        self.get_logger().info(f"Iteration {self.iteration_count}: Current best solution fitness = "
+        self.get_logger().info(f"Iteration {self.iteration_count}: Current best solution fitness_QL = "
                                f"{Fitness.fitness_function(self.local_best_solution, self.cost_matrix)}")
 
 def generate_problem(num_tasks):

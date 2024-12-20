@@ -17,6 +17,7 @@ for i in $(seq 0 $((INSTANCE_COUNT - 1))); do
     echo "Launching instance with agent_id=$AGENT_ID and problem_filename=$PROBLEM_FILENAME..."
     # Run each instance with parameters
     ros2 run $PACKAGE_NAME $NODE_NAME --ros-args -p agent_id:=$AGENT_ID -p problem_filename:=$PROBLEM_FILENAME &
+    ros2 run $PACKAGE_NAME $NODE_NAME fitness_logger
 done
 
 echo "Launched $INSTANCE_COUNT instances of $NODE_NAME."
