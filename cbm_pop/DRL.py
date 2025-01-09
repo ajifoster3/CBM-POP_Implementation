@@ -1,3 +1,3 @@
  # initialize
-  def n():
+def n():
    pass

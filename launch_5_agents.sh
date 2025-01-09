@@ -6,7 +6,7 @@ NODE_NAME="cbm_population_agent"
 
 # Number of instances to run
 INSTANCE_COUNT=5
-PROBLEM_FILENAME="150_Task_Problem.csv"
+PROBLEM_FILENAME="src/cbm_pop/150_Task_Problem.csv"
 
 # Base agent_id to start from
 START_AGENT_ID=1

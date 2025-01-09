@@ -4,30 +4,26 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import re
 
+from cbm_pop.Fitness import Fitness
+from cbm_pop.Problem import Problem
+from cbm_pop_interfaces.msg import Solution
+import datetime
 
 class FitnessLogger(Node):
     def __init__(self):
         super().__init__('fitness_logger')
 
-        # ROS2 loglarını dinlemek için abone oluyoruz
-        self.get_logger().add_handler(self.log_handler)
+        num_tasks = 150
+        problem = Problem()
+        problem.load_cost_matrix("src/cbm_pop/150_Task_Problem.csv", "csv")
+        self.cost_matrix = problem.cost_matrix
+
 
         # Fitness değerlerini depolayacağız
         self.iteration_logs = []
 
-        # Matplotlib setup
-        self.fig, self.ax = plt.subplots()
-        self.line, = self.ax.plot([], [], 'b-', marker='o', label="Fitness Value")
-        self.ax.set_xlim(0, 100)  # X ekseni (iterasyon sayısı)
-        self.ax.set_ylim(0, 1)  # Y ekseni (fitness aralığı)
-        self.ax.set_title("Fitness Over Iterations (Live)")
-        self.ax.set_xlabel("Iteration")
-        self.ax.set_ylabel("Fitness Value")
-        self.ax.grid(True)
-        self.ax.legend()
-
-        # Canlı grafiği güncelleme fonksiyonu
-        self.ani = FuncAnimation(self.fig, self.update_plot, interval=100)
+        self.solution_subscriber = self.create_subscription(
+            Solution, 'best_solution', self.solution_update_callback, 10)
 
     def log_handler(self, msg):
         # Log mesajını alıyoruz
@@ -38,6 +34,16 @@ class FitnessLogger(Node):
                 fitness_value = float(match.group(1))
                 # Fitness değerini kaydet
                 self.iteration_logs.append((len(self.iteration_logs) + 1, fitness_value))
+
+    def solution_update_callback(self, msg):
+        # Callback to process incoming weight matrix updates
+        if msg is not None:
+            solution = (msg.order, msg.allocations)
+            fitness = Fitness.fitness_function(solution, self.cost_matrix)
+            print(fitness)
+            self.iteration_logs.append((len(self.iteration_logs) + 1, fitness))
+        else:
+            print("Received empty message")
 
     def update_plot(self, frame):
         # Verileri güncelle

@@ -1,5 +1,7 @@
 from setuptools import find_packages, setup
 
+import cbm_pop
+
 package_name = 'cbm_pop'
 
 setup(
@@ -21,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'cbm_population_agent = cbm_pop.cbm_population_agent:main',
+            'cbm_fitness_logger = cbm_pop.fitness_logger:main',
         ],
     },
 )

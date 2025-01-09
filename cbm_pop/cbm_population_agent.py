@@ -282,6 +282,8 @@ class CBMPopulationAgent(Node):
         self.get_logger().info(f"Iteration {self.iteration_count}: Current best solution fitness_QL = "
                                f"{Fitness.fitness_function(self.local_best_solution, self.cost_matrix)}")
 
+
+
 def generate_problem(num_tasks):
     """
     Randomly generates a problem of size `number_tasks`
@@ -303,7 +305,7 @@ def main(args=None):
 
     node = Node("parameter_loader")
     node.declare_parameter("agent_id", 1)  # Default agent_id
-    node.declare_parameter("problem_filename", "150_Task_Problem.csv")  # Default problem_filename
+    node.declare_parameter("problem_filename", "src/cbm_pop/150_Task_Problem.csv")  # Default problem_filename
 
     agent_id = node.get_parameter("agent_id").value
     problem_filename = node.get_parameter("problem_filename").value
