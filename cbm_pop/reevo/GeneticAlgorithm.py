@@ -1,11 +1,20 @@
 import random
-
+from cbm_pop.Problem import Problem
 
 class GeneticAlgorithm:
-    def __init__(self, population_size, number_of_tasks, number_of_agents):
+    def __init__(self, population_size, number_of_tasks, number_of_agents, crossover_function_code):
         self.population_size = population_size
         self.number_of_tasks = number_of_tasks
         self.number_of_agents = number_of_agents
+        self.crossover_function = self._load_crossover_function(crossover_function_code)
+
+    def _load_crossover_function(self, code):
+        """
+        Dynamically loads a Python function from a code string.
+        """
+        local_namespace = {}
+        exec(code, globals(), local_namespace)
+        return local_namespace['ga_crossover_v2']
 
     def generate_initial_population(self):
         population = []
@@ -22,7 +31,6 @@ class GeneticAlgorithm:
     def generate_non_zero_integers_with_sum(self):
         """
         Generates `x` non-zero integers whose sum is `y`.
-
         Parameters:
             self.number_of_tasks (int): Number of integers.
             self.number_of_agents (int): Desired sum of the integers.
@@ -46,10 +54,5 @@ class GeneticAlgorithm:
 
         return nums
 
-if __name__ == '__main__':
-    ga = GeneticAlgorithm(10, 30, 4)
-    pop = ga.generate_initial_population()
-    for sol in pop:
-        for i in sol[0]:
-            print(str(i) + " ", end='')
-        print(sol[1])
+    def perform_crossover(self, parent1, parent2, cost_matrix):
+        return self.crossover_function(parent1, parent2, cost_matrix)

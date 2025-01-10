@@ -4,7 +4,7 @@ prompts = dict(
     You are an expert in the domain of heuristics. Your task is to design heuristics that can 
     effectively solve optimization problems.
     Your response outputs Python code and nothing else.
-    Format your code as a Python code string : \"\''' python ... \'''\".
+    Format your code as a Python code string : \"\''' ... \'''\".
     ''',
     reflector_system_prompt =
     '''
@@ -22,7 +22,7 @@ prompts = dict(
     {seed_function}
     
     Refer to the format of a trivial design above. Be very creative and give '{function_name}_v2'.
-    Output code only and enclose your code with Python code block: \''' python ... \'''.
+    Output code only and enclose your code with Python code block: \''' ... \'''.
     
     {initial_longterm_reflection}
     ''',
@@ -76,7 +76,7 @@ prompts = dict(
     
     [improved code]
     Please write an improved function '{function_name}_v2', according to the reflection. Output code only and 
-    enclose your code with Python code block: \''' python ... \'''.
+    enclose your code with Python code block: \''' ... \'''.
     ''',
     user_prompt_longterm_reflection =
     '''
@@ -102,7 +102,7 @@ prompts = dict(
     
     [Improved code]
     Please write a mutation function '{function_name}_v2', according to the reflection. Output code only and enclose 
-    your code twith Python code block: \''' python ... \'''.
+    your code twith Python code block: \''' ... \'''.
     '''
 )
 function_name = dict(
