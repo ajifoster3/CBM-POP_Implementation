@@ -1,13 +1,29 @@
 import random
 from cbm_pop.Problem import Problem
+from cbm_pop.Fitness import Fitness
+
 
 class GeneticAlgorithm:
-    def __init__(self, population_size, number_of_tasks, number_of_agents, crossover_function_code, mutation_function_code):
+    def __init__(self,
+                 population_size,
+                 number_of_tasks,
+                 number_of_agents,
+                 crossover_function_code,
+                 mutation_function_code,
+                 cost_matrix):
         self.population_size = population_size
         self.number_of_tasks = number_of_tasks
         self.number_of_agents = number_of_agents
         self.crossover_function = self._load_crossover_function(crossover_function_code)
         self.mutation_function = self._load_mutation_function(mutation_function_code)
+        self.initial_population = self.generate_initial_population()
+        self.cost_matrix = cost_matrix
+
+    def run_genetic_algorithm(self):
+        population = self.initial_population
+        population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        for solution in population:
+            print(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
 
     def _load_crossover_function(self, code):
         """
