@@ -23,6 +23,8 @@ class GeneticAlgorithm:
         population = self.initial_population
         for i in range(number_of_iterations):
             population = self.ga_iteration(population)
+        return max(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
+
 
     def ga_iteration(self, population):
         population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
