@@ -21,9 +21,28 @@ class GeneticAlgorithm:
 
     def run_genetic_algorithm(self):
         population = self.initial_population
+        new_population = self.ga_iteration(population)
+
+    def ga_iteration(self, population):
+        population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        print("initial Solutions:")
+        for solution in population:
+            print(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        elitism_selected_solutions = population[:int(self.population_size * 0.2)]
+        crossover_selected_solutions = population[int(self.population_size * 0.5):]
+        generated_solutions = []
+        for i in range(len(population) - len(elitism_selected_solutions)):
+            sampled_solutions = random.sample(crossover_selected_solutions, 2)
+            child_solution = self.perform_crossover(sampled_solutions[0], sampled_solutions[1], self.cost_matrix)
+            child_solution = self.perform_mutation(child_solution, self.cost_matrix)
+            generated_solutions.append(child_solution)
+        generated_solutions.extend(elitism_selected_solutions)
+        population = generated_solutions
+        print("After run:")
         population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
         for solution in population:
             print(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        return population
 
     def _load_crossover_function(self, code):
         """
