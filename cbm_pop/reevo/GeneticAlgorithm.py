@@ -22,11 +22,14 @@ class GeneticAlgorithm:
         self.mutation_function = self._load_mutation_function(mutation_function_code)
         self.initial_population = self.generate_initial_population()
         self.cost_matrix = cost_matrix
+        self.is_operators_invalid = False
 
     def run_genetic_algorithm(self, number_of_iterations):
         population = self.initial_population
         for i in range(number_of_iterations):
             population = self.ga_iteration(population)
+            if self.is_operators_invalid:
+                return -1
         return max(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
 
 
@@ -42,7 +45,11 @@ class GeneticAlgorithm:
             generated_solutions.append(child_solution)
         generated_solutions.extend(elitism_selected_solutions)
         population = generated_solutions
-        population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        try:
+            population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
+        except IndexError:
+            print(IndexError)
+            self.is_operators_invalid = True
         return population
 
     def _load_crossover_function(self, code):
@@ -100,7 +107,15 @@ class GeneticAlgorithm:
         return nums
 
     def perform_crossover(self, parent1, parent2, cost_matrix):
-        return self.crossover_function(parent1, parent2, cost_matrix)
+        try:
+            return self.crossover_function(parent1, parent2, cost_matrix)
+        except ValueError:
+            print(ValueError)
+            self.is_operators_invalid = True
 
     def perform_mutation(self, parent, cost_matrix):
-        return self.mutation_function(parent, cost_matrix)
+        try:
+            return self.mutation_function(parent, cost_matrix)
+        except ValueError:
+            print(ValueError)
+            self.is_operators_invalid = True
