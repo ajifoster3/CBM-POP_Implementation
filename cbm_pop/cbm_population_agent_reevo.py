@@ -15,6 +15,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, Float32
 import rclpy
 from cbm_pop.reevo.PopulationGenerator import PopulationGenerator
+from cbm_pop.reevo.GeneticAlgorithm import GeneticAlgorithm
 
 class CBMPopulationAgentReevo(Node):
 
@@ -104,6 +105,14 @@ class CBMPopulationAgentReevo(Node):
         else:
             print("Received empty message")
 
+    def run_genetic_algorithm(self):
+        genetic_algorithm = GeneticAlgorithm(20,
+                                             len(self.cost_matrix),
+                                             5,
+                                             self.population["ga_crossover"][0],
+                                             self.population["ga_mutation"][0],
+                                             self.cost_matrix)
+        print(genetic_algorithm.run_genetic_algorithm(100))
 
     async def run_step(self):
         """
@@ -161,6 +170,9 @@ def main(args=None):
 
     for sol in agent.population["ga_crossover"]:
         print(sol)
+
+    agent.run_genetic_algorithm()
+
 
     try:
         try:

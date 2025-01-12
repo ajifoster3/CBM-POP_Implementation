@@ -14,6 +14,10 @@ class GeneticAlgorithm:
         self.population_size = population_size
         self.number_of_tasks = number_of_tasks
         self.number_of_agents = number_of_agents
+
+        crossover_function_code = crossover_function_code.replace("''' python\n", "").strip("'''")
+        mutation_function_code = mutation_function_code.replace("''' python\n", "").strip("'''")
+
         self.crossover_function = self._load_crossover_function(crossover_function_code)
         self.mutation_function = self._load_mutation_function(mutation_function_code)
         self.initial_population = self.generate_initial_population()
