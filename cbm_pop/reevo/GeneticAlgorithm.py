@@ -26,11 +26,12 @@ class GeneticAlgorithm:
 
     def run_genetic_algorithm(self, number_of_iterations):
         population = self.initial_population
+        initial_fittest = min(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
         for i in range(number_of_iterations):
             population = self.ga_iteration(population)
             if self.is_operators_invalid:
                 return -1
-        return max(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
+        return initial_fittest - min(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
 
 
     def ga_iteration(self, population):

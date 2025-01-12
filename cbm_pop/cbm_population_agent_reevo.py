@@ -105,14 +105,17 @@ class CBMPopulationAgentReevo(Node):
         else:
             print("Received empty message")
 
-    def run_genetic_algorithm(self):
-        genetic_algorithm = GeneticAlgorithm(20,
-                                             len(self.cost_matrix),
-                                             5,
-                                             self.population["ga_crossover"][0],
-                                             self.population["ga_mutation"][0],
-                                             self.cost_matrix)
-        print(genetic_algorithm.run_genetic_algorithm(100))
+    def get_solution_fitnesses(self):
+        solution_fitnesses = []
+        for solution_ID in range(self.pop_size):
+            genetic_algorithm = GeneticAlgorithm(20,
+                                                 len(self.cost_matrix),
+                                                 5,
+                                                 self.population["ga_crossover"][solution_ID],
+                                                 self.population["ga_mutation"][solution_ID],
+                                                 self.cost_matrix)
+            solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(100))
+        return solution_fitnesses
 
     async def run_step(self):
         """
@@ -168,10 +171,10 @@ def main(args=None):
         cost_matrix=problem.cost_matrix
     )
 
-    for sol in agent.population["ga_crossover"]:
-        print(sol)
+    fitnesses = agent.get_solution_fitnesses()
 
-    agent.run_genetic_algorithm()
+    for solution_fitness in fitnesses:
+        print(solution_fitness)
 
 
     try:
