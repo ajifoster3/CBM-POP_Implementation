@@ -1,7 +1,15 @@
 import random
 from cbm_pop.Problem import Problem
 from cbm_pop.Fitness import Fitness
+import signal
 
+class TimeoutException(Exception):
+    """Custom exception for signaling a timeout."""
+    pass
+
+def timeout_handler(signum, frame):
+    """Handler function for the alarm signal."""
+    raise TimeoutException("Function call timed out.")
 
 class GeneticAlgorithm:
     def __init__(self,
@@ -28,21 +36,39 @@ class GeneticAlgorithm:
         population = self.initial_population
         initial_fittest = min(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
         for i in range(number_of_iterations):
-            population = self.ga_iteration(population)
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(2)
+            try:
+                population = self.ga_iteration(population)
+                signal.alarm(0)  # Cancel the alarm if the function finishes
+            except TimeoutException:
+                print(f"Iteration {i} of ga_iteration timed out after {2} seconds.")
+                return -1
+
             if self.is_operators_invalid:
                 return -1
         return initial_fittest - min(Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
 
 
     def ga_iteration(self, population):
+        if self.is_operators_invalid:
+            return -1
         population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
         elitism_selected_solutions = population[:int(self.population_size * 0.2)]
         crossover_selected_solutions = population[:int(self.population_size * 0.5)]
         generated_solutions = []
         for i in range(len(population) - len(elitism_selected_solutions)):
             sampled_solutions = random.sample(crossover_selected_solutions, 2)
-            child_solution = self.perform_crossover(sampled_solutions[0], sampled_solutions[1], self.cost_matrix)
-            child_solution = self.perform_mutation(child_solution, self.cost_matrix)
+            try:
+                child_solution = self.perform_crossover(sampled_solutions[0], sampled_solutions[1], self.cost_matrix)
+            except:
+                self.is_operators_invalid = True
+                break
+            try:
+                child_solution = self.perform_mutation(child_solution, self.cost_matrix)
+            except:
+                self.is_operators_invalid = True
+                break
             generated_solutions.append(child_solution)
         generated_solutions.extend(elitism_selected_solutions)
         population = generated_solutions
@@ -57,17 +83,25 @@ class GeneticAlgorithm:
         """
         Dynamically loads a Python function from a code string.
         """
-        local_namespace = {}
-        exec(code, globals(), local_namespace)
-        return local_namespace['ga_crossover_v2']
+        try:
+            local_namespace = {}
+            exec(code, globals(), local_namespace)
+            return local_namespace['ga_crossover_v2']
+        except:
+            self.is_operators_invalid = True
+            return -1
 
     def _load_mutation_function(self, code):
         """
         Dynamically loads a Python function from a code string.
         """
-        local_namespace = {}
-        exec(code, globals(), local_namespace)
-        return local_namespace['ga_mutation_v2']
+        try:
+            local_namespace = {}
+            exec(code, globals(), local_namespace)
+            return local_namespace['ga_mutation_v2']
+        except:
+            self.is_operators_invalid = True
+            return -1
 
     def generate_initial_population(self):
         population = []
