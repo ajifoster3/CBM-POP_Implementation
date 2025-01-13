@@ -28,19 +28,28 @@ prompts = dict(
     ''',
     user_prompt_shortterm_reflection =
     '''
-    Below are two {function_name} functions for {problem_description}
-    {function_description}
+    Below are two {function_name_1} and {function_name_2} functions for {problem_description}
+    {function_name_1}:
+    {function_description_1}
+    {function_name_2}:
+    {function_description_2}
     
     Your are provided with two code versions below, where the second version performs better than the first one.
     
-    [Worse code]
-    {worse_code}
+    [Worse {function_name_1} code]
+    {worse_code_1}
     
-    [Better code]
-    {better_code}
+    [Better {function_name_1} code]
+    {better_code_1}
+    
+    [Worse {function_name_2} code]
+    {worse_code_2}
+    
+    [Better {function_name_2} code]
+    {better_code_2}
     
     You respond with some hints for designing better heuristics, based on the two code versions and using less than
-    20 words.
+    40 words.
     ''',
     user_prompt_shortterm_reflection_on_blackbox_COPs =
     '''

@@ -1,21 +1,18 @@
+from rclpy.node import Node
+from std_msgs.msg import String, Float32
+import rclpy
 import asyncio
 import random
 import numpy as np
-from copy import deepcopy
 from random import sample
-
-
-from cbm_pop.Condition import ConditionFunctions
 from cbm_pop.Fitness import Fitness
 from cbm_pop.Operator import OperatorFunctions
 from cbm_pop.WeightMatrix import WeightMatrix
 from cbm_pop.Problem import Problem
-from cbm_pop_interfaces.msg import Solution, Weights
-from rclpy.node import Node
-from std_msgs.msg import String, Float32
-import rclpy
+from cbm_pop.reevo.ShortTermReflector import ShortTermReflector
 from cbm_pop.reevo.PopulationGenerator import PopulationGenerator
 from cbm_pop.reevo.GeneticAlgorithm import GeneticAlgorithm
+from cbm_pop.reevo import reevo_config
 
 class CBMPopulationAgentReevo(Node):
 
@@ -122,6 +119,48 @@ class CBMPopulationAgentReevo(Node):
         A single step of the `run` method, executed periodically by the ROS2 timer.
         """
 
+    def perform_short_term_reflection(self, population, fitnesses):
+        valid_indexes = [index for index, fitness in enumerate(fitnesses) if fitness != -1]
+
+        sample_index_pair_list = []
+
+        # Ensure there are at least two valid fitnesses to sample from
+        if len(valid_indexes) >= 2:
+            for i in range(5):  # Repeat the sampling process 5 times
+                # Randomly sample two unique indexes
+                sampled_indexes = sample(valid_indexes, 2)
+                print(f"Sampling {i + 1}: Sampled indexes: {sampled_indexes}")
+                sample_index_pair_list.append(sampled_indexes)
+        else:
+            print("Not enough valid fitnesses to sample two unique indexes.")
+
+        reflection_list = []
+
+        for sample_index_pair in sample_index_pair_list:
+            # Sort the indexes based on their fitness values in ascending order (lower is better)
+            better_idx, worse_idx = sorted(sample_index_pair, key=lambda idx: fitnesses[idx])
+
+            # Assign the corresponding population values
+            better_code_1 = population[reevo_config.function_name["ga_crossover"]][better_idx]  # Lower fitness (better)
+            worse_code_1 = population[reevo_config.function_name["ga_crossover"]][worse_idx]  # Higher fitness (worse)
+            better_code_2 = population[reevo_config.function_name["ga_mutation"]][better_idx]  # Lower fitness (better)
+            worse_code_2 = population[reevo_config.function_name["ga_mutation"]][worse_idx]  # Higher fitness (worse)
+
+            short_term_reflector = ShortTermReflector()
+            reflection = short_term_reflector.fetch_reflection(function_name_1=reevo_config.function_name["ga_crossover"],
+                                                               function_name_2=reevo_config.function_name["ga_mutation"],
+                                                  problem_description=reevo_config.problem_description["task_allocation"],
+                                                  function_description_1=reevo_config.function_description["ga_crossover"],
+                                                  function_description_2=reevo_config.function_description["ga_mutation"],
+                                                  worse_code_1=worse_code_1,
+                                                  better_code_1=better_code_1,
+                                                  worse_code_2=worse_code_2,
+                                                  better_code_2=better_code_2
+                                                  )
+            print(reflection)
+            reflection_list.append({"reflection": reflection, "better_id": better_idx, "worse_id": worse_idx})
+        return reflection_list
+
 def generate_problem(num_tasks):
     """
     Randomly generates a problem of size `number_tasks`
@@ -175,6 +214,8 @@ def main(args=None):
 
     for solution_fitness in fitnesses:
         print(solution_fitness)
+
+    reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
 
 
     try:

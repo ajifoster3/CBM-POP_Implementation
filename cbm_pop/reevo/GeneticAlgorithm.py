@@ -74,8 +74,7 @@ class GeneticAlgorithm:
         population = generated_solutions
         try:
             population.sort(key=lambda solution: Fitness.fitness_function(solution, cost_matrix=self.cost_matrix))
-        except IndexError:
-            print(IndexError)
+        except:
             self.is_operators_invalid = True
         return population
 
