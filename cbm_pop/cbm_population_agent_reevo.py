@@ -2,17 +2,16 @@ from rclpy.node import Node
 from std_msgs.msg import String, Float32
 import rclpy
 import asyncio
-import random
 import numpy as np
 from random import sample
 from cbm_pop.Fitness import Fitness
-from cbm_pop.Operator import OperatorFunctions
-from cbm_pop.WeightMatrix import WeightMatrix
 from cbm_pop.Problem import Problem
 from cbm_pop.reevo.ShortTermReflector import ShortTermReflector
 from cbm_pop.reevo.PopulationGenerator import PopulationGenerator
 from cbm_pop.reevo.GeneticAlgorithm import GeneticAlgorithm
+from cbm_pop.reevo.Crossover import Crossover
 from cbm_pop.reevo import reevo_config
+
 
 class CBMPopulationAgentReevo(Node):
 
@@ -29,13 +28,10 @@ class CBMPopulationAgentReevo(Node):
         self.cost_matrix = cost_matrix
         self.agent_ID = agent_id
 
-
         # ROS publishers and subscribers
-
 
         # Timer for periodic execution of the run loop
         self.run_timer = self.create_timer(0.1, self.run_step)
-
 
     def generate_heuristic_population(self, population_size):
         """
@@ -44,7 +40,6 @@ class CBMPopulationAgentReevo(Node):
         """
 
         return self.population_gen.generate_population(population_size)
-
 
     def select_solution(self):
         """
@@ -96,7 +91,7 @@ class CBMPopulationAgentReevo(Node):
         if msg is not None and self.coalition_best_solution is not None:
             solution = (msg.order, msg.allocations)
             if Fitness.fitness_function(solution, self.cost_matrix) > Fitness.fitness_function(
-                        self.coalition_best_solution, self.cost_matrix):
+                    self.coalition_best_solution, self.cost_matrix):
                 self.coalition_best_solution = solution
                 self.coalition_best_agent = msg.id
         else:
@@ -147,19 +142,45 @@ class CBMPopulationAgentReevo(Node):
             worse_code_2 = population[reevo_config.function_name["ga_mutation"]][worse_idx]  # Higher fitness (worse)
 
             short_term_reflector = ShortTermReflector()
-            reflection = short_term_reflector.fetch_reflection(function_name_1=reevo_config.function_name["ga_crossover"],
-                                                               function_name_2=reevo_config.function_name["ga_mutation"],
-                                                  problem_description=reevo_config.problem_description["task_allocation"],
-                                                  function_description_1=reevo_config.function_description["ga_crossover"],
-                                                  function_description_2=reevo_config.function_description["ga_mutation"],
-                                                  worse_code_1=worse_code_1,
-                                                  better_code_1=better_code_1,
-                                                  worse_code_2=worse_code_2,
-                                                  better_code_2=better_code_2
-                                                  )
+            reflection = short_term_reflector.fetch_reflection(
+                function_name_1=reevo_config.function_name["ga_crossover"],
+                function_name_2=reevo_config.function_name["ga_mutation"],
+                problem_description=reevo_config.problem_description["task_allocation"],
+                function_description_1=reevo_config.function_description["ga_crossover"],
+                function_description_2=reevo_config.function_description["ga_mutation"],
+                worse_code_1=worse_code_1,
+                better_code_1=better_code_1,
+                worse_code_2=worse_code_2,
+                better_code_2=better_code_2
+            )
             print(reflection)
             reflection_list.append({"reflection": reflection, "better_id": better_idx, "worse_id": worse_idx})
         return reflection_list
+
+    def perform_crossover(self, population, reflections):
+        offspring_population = {"ga_crossover": [], "ga_mutation": []}
+        for reflection in reflections:
+            crossover = Crossover()
+            offspring_crossover_operator = crossover.perform_crossover(
+                function_name=reevo_config.function_name["ga_crossover"],
+                task_description=reevo_config.problem_description["task_allocation"],
+                function_signature0="heuristics_v0",
+                worse_code=population["ga_crossover"][reflection["worse_id"]],
+                function_signature1="heuristics_v1",
+                better_code=population["ga_crossover"][reflection["better_id"]],
+                shortterm_reflection=reflection["reflection"])
+            offspring_population["ga_crossover"].append(offspring_crossover_operator)
+            offspring_mutation_operator = crossover.perform_crossover(
+                function_name=reevo_config.function_name["ga_mutation"],
+                task_description=reevo_config.problem_description["task_allocation"],
+                function_signature0="heuristics_v0",
+                worse_code=population["ga_mutation"][reflection["worse_id"]],
+                function_signature1="heuristics_v1",
+                better_code=population["ga_mutation"][reflection["better_id"]],
+                shortterm_reflection=reflection["reflection"])
+            offspring_population["ga_mutation"].append(offspring_mutation_operator)
+        return offspring_population
+
 
 def generate_problem(num_tasks):
     """
@@ -177,6 +198,7 @@ def generate_problem(num_tasks):
     np.fill_diagonal(cost_matrix, 0)
     return cost_matrix
 
+
 async def ros_loop(node):
     """
     Async ROS spin loop.
@@ -184,6 +206,7 @@ async def ros_loop(node):
     while rclpy.ok():
         rclpy.spin_once(node, timeout_sec=0)
         await asyncio.sleep(0.01)  # Small sleep to allow cooperative multitasking
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -204,7 +227,7 @@ def main(args=None):
     # Create and run the agent node
     node_name = f"cbm_population_agent_{agent_id}"
     agent = CBMPopulationAgentReevo(
-        pop_size=3, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
+        pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_tasks=num_tasks, num_tsp_agents=5, num_iterations=1000,
         num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
         cost_matrix=problem.cost_matrix
@@ -217,6 +240,8 @@ def main(args=None):
 
     reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
 
+    # Current Choice: Evaluate both operators at once, crossover individually.
+    crossover_offspring = agent.perform_crossover(agent.population, reflections)
 
     try:
         try:
@@ -231,6 +256,7 @@ def main(args=None):
     finally:
         agent.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
