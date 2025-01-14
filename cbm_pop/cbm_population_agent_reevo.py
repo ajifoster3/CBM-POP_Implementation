@@ -7,6 +7,7 @@ from random import sample
 from cbm_pop.Fitness import Fitness
 from cbm_pop.Problem import Problem
 from cbm_pop.reevo.ShortTermReflector import ShortTermReflector
+from cbm_pop.reevo.LongTermReflector import LongTermReflector
 from cbm_pop.reevo.PopulationGenerator import PopulationGenerator
 from cbm_pop.reevo.GeneticAlgorithm import GeneticAlgorithm
 from cbm_pop.reevo.Crossover import Crossover
@@ -27,6 +28,7 @@ class CBMPopulationAgentReevo(Node):
         self.population = asyncio.run(self.population_gen.generate_population(self.pop_size))
         self.cost_matrix = cost_matrix
         self.agent_ID = agent_id
+        self.longterm_reflector = LongTermReflector()
 
         # ROS publishers and subscribers
 
@@ -181,6 +183,14 @@ class CBMPopulationAgentReevo(Node):
             offspring_population["ga_mutation"].append(offspring_mutation_operator)
         return offspring_population
 
+    def perform_longterm_reflection(self, shortterm_reflections):
+        st_reflections = ''.join([entry['reflection'] for entry in shortterm_reflections])
+        lt_reflector = LongTermReflector()
+        lt_reflector_operator = lt_reflector.perform_longterm_reflection(st_reflections,
+                                                                         reevo_config.problem_description[
+                                                                             "task_allocation"])
+        return lt_reflector_operator
+
 
 def generate_problem(num_tasks):
     """
@@ -242,6 +252,9 @@ def main(args=None):
 
     # Current Choice: Evaluate both operators at once, crossover individually.
     crossover_offspring = agent.perform_crossover(agent.population, reflections)
+
+    longterm_reflections = agent.perform_longterm_reflection(reflections)
+    print("LTR:" + longterm_reflections)
 
     try:
         try:
