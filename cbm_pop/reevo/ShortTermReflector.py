@@ -13,15 +13,11 @@ class ShortTermReflector:
         pass
 
     def fetch_reflection(self,
-                         function_name_1,
-                         function_name_2,
+                         function_name,
                          problem_description,
-                         function_description_1,
-                         function_description_2,
-                         worse_code_1,
-                         better_code_1,
-                         worse_code_2,
-                         better_code_2):
+                         function_description,
+                         worse_code,
+                         better_code):
         function = ""
         # Synchronous call to OpenAI API
         stream = self.client.chat.completions.create(
@@ -34,15 +30,11 @@ class ShortTermReflector:
                 {
                     "role": "user",
                     "content": reevo_config.prompts["user_prompt_shortterm_reflection"].format(
-                        function_name_1=function_name_1,
-                        function_name_2=function_name_2,
+                        function_name=function_name,
                         problem_description=problem_description,
-                        function_description_1=function_description_1,
-                        function_description_2=function_description_2,
-                        worse_code_1=worse_code_1,
-                        better_code_1=better_code_1,
-                        worse_code_2=worse_code_2,
-                        better_code_2=better_code_2
+                        function_description=function_description,
+                        worse_code=worse_code,
+                        better_code=better_code
                     )
                 }
             ],

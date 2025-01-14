@@ -107,10 +107,11 @@ class CBMPopulationAgentReevo(Node):
             genetic_algorithm = GeneticAlgorithm(20,
                                                  len(self.cost_matrix),
                                                  5,
-                                                 self.population["ga_crossover"][solution_ID],
-                                                 self.population["ga_mutation"][solution_ID],
+                                                 self.population[solution_ID],
                                                  self.cost_matrix)
             solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(100))
+        for fitness in solution_fitnesses:
+            print(fitness)
         return solution_fitnesses
 
     async def run_step(self):
@@ -139,48 +140,33 @@ class CBMPopulationAgentReevo(Node):
             better_idx, worse_idx = sorted(sample_index_pair, key=lambda idx: fitnesses[idx])
 
             # Assign the corresponding population values
-            better_code_1 = population[reevo_config.function_name["ga_crossover"]][better_idx]  # Lower fitness (better)
-            worse_code_1 = population[reevo_config.function_name["ga_crossover"]][worse_idx]  # Higher fitness (worse)
-            better_code_2 = population[reevo_config.function_name["ga_mutation"]][better_idx]  # Lower fitness (better)
-            worse_code_2 = population[reevo_config.function_name["ga_mutation"]][worse_idx]  # Higher fitness (worse)
+            better_code = population[better_idx]  # Lower fitness (better)
+            worse_code = population[worse_idx]  # Higher fitness (worse)
 
             short_term_reflector = ShortTermReflector()
             reflection = short_term_reflector.fetch_reflection(
-                function_name_1=reevo_config.function_name["ga_crossover"],
-                function_name_2=reevo_config.function_name["ga_mutation"],
+                function_name=reevo_config.function_name["ga_combined"],
                 problem_description=reevo_config.problem_description["task_allocation"],
-                function_description_1=reevo_config.function_description["ga_crossover"],
-                function_description_2=reevo_config.function_description["ga_mutation"],
-                worse_code_1=worse_code_1,
-                better_code_1=better_code_1,
-                worse_code_2=worse_code_2,
-                better_code_2=better_code_2
+                function_description=reevo_config.function_description["ga_combined"],
+                worse_code=worse_code,
+                better_code=better_code
             )
             reflection_list.append({"reflection": reflection, "better_id": better_idx, "worse_id": worse_idx})
         return reflection_list
 
     def perform_crossover(self, population, reflections):
-        offspring_population = {"ga_crossover": [], "ga_mutation": []}
+        offspring_population = []
         for reflection in reflections:
             crossover = Crossover()
-            offspring_crossover_operator = crossover.perform_crossover(
-                function_name=reevo_config.function_name["ga_crossover"],
+            offspring_operator = crossover.perform_crossover(
+                function_name=reevo_config.function_name["ga_combined"],
                 task_description=reevo_config.problem_description["task_allocation"],
                 function_signature0="heuristics_v0",
-                worse_code=population["ga_crossover"][reflection["worse_id"]],
+                worse_code=population[reflection["worse_id"]],
                 function_signature1="heuristics_v1",
-                better_code=population["ga_crossover"][reflection["better_id"]],
+                better_code=population[reflection["better_id"]],
                 shortterm_reflection=reflection["reflection"])
-            offspring_population["ga_crossover"].append(offspring_crossover_operator)
-            offspring_mutation_operator = crossover.perform_crossover(
-                function_name=reevo_config.function_name["ga_mutation"],
-                task_description=reevo_config.problem_description["task_allocation"],
-                function_signature0="heuristics_v0",
-                worse_code=population["ga_mutation"][reflection["worse_id"]],
-                function_signature1="heuristics_v1",
-                better_code=population["ga_mutation"][reflection["better_id"]],
-                shortterm_reflection=reflection["reflection"])
-            offspring_population["ga_mutation"].append(offspring_mutation_operator)
+            offspring_population.append(offspring_operator)
         return offspring_population
 
     def perform_longterm_reflection(self, shortterm_reflections):
@@ -193,25 +179,18 @@ class CBMPopulationAgentReevo(Node):
 
     def perform_elitism_mutation(self, fitnesses, longterm_reflections):
         index_min = min(range(len(fitnesses)), key=fitnesses.__getitem__)
-        best_fitness_crossover = self.population[reevo_config.function_name["ga_crossover"]][index_min]
-        best_fitness_mutation = self.population[reevo_config.function_name["ga_mutation"]][index_min]
+        best_fitness = self.population[index_min]
         elitism_mutation = ElitistMutation()
 
-        crossover_offspring = []
-        mutation_offspring = []
+        offspring = []
 
         for i in range(5):
-            crossover_offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_crossover"],
+            offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_combined"],
                                                              reevo_config.problem_description["task_allocation"],
                                                              longterm_reflections,
-                                                             "ga_crossover_v1",
-                                                             best_fitness_crossover))
-            mutation_offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_mutation"],
-                                                             reevo_config.problem_description["task_allocation"],
-                                                             longterm_reflections,
-                                                             "ga_mutation_v1",
-                                                             best_fitness_mutation))
-        return {"ga_crossover": crossover_offspring, "ga_mutation": mutation_offspring}
+                                                             "ga_combined_v1",
+                                                             best_fitness))
+        return offspring
 
 
 def generate_problem(num_tasks):
@@ -266,27 +245,23 @@ def main(args=None):
     )
 
     fitnesses = agent.get_solution_fitnesses()
+    print("Calculated Fitnesses")
 
     reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
-
+    print("Performed short term reflections")
     # Current Choice: Evaluate both operators at once, crossover individually.
     crossover_offspring = agent.perform_crossover(agent.population, reflections)
-
-
-
+    print("Performed crossover")
     longterm_reflections = agent.perform_longterm_reflection(reflections)
-
+    print("Performed long term reflections")
     elitism_mutation_offspring = agent.perform_elitism_mutation(fitnesses, longterm_reflections)
+    print("Performed elitism mutation")
 
-    combined_offspring = {
-        "ga_crossover": crossover_offspring["ga_crossover"] + elitism_mutation_offspring["ga_crossover"],
-        "ga_mutation": crossover_offspring["ga_mutation"] + elitism_mutation_offspring["ga_mutation"]
-    }
+    combined_offspring = crossover_offspring + elitism_mutation_offspring
 
-    for operator in combined_offspring:
-        for offspring in combined_offspring[operator]:
-            print(offspring)
-            print()
+    for offspring in combined_offspring:
+        print(offspring)
+        print()
 
     try:
         try:

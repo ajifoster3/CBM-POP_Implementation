@@ -3,6 +3,7 @@ import asyncio
 from cbm_pop.reevo import reevo_config
 from openai import OpenAI
 
+
 class PopulationGenerator:
     def __init__(self):
         self.client = OpenAI(
@@ -53,29 +54,22 @@ class PopulationGenerator:
         # Prepare tasks for all keys in reevo_config
         tasks = []
 
-        for key in reevo_config.function_name.keys():
-            function_name = reevo_config.function_name[key]
-            problem_description = reevo_config.problem_description["task_allocation"]
-            function_description = reevo_config.function_description[key]
-            seed_function = reevo_config.seed_function[key]
+        key = reevo_config.function_name["ga_combined"]
 
-            task_description = reevo_config.prompts["task_description"].format(
-                function_name=function_name,
-                problem_description=problem_description,
-                function_description=function_description,
-            )
-
-            # Create async tasks for generating functions, using asyncio.to_thread to offload blocking calls
-            for i in range(population_size):
-                tasks.append(asyncio.to_thread(self.fetch_function, key, function_name, task_description, seed_function))
+        function_name = reevo_config.function_name[key]
+        problem_description = reevo_config.problem_description["task_allocation"]
+        function_description = reevo_config.function_description[key]
+        seed_function = reevo_config.seed_function[key]
+        task_description = reevo_config.prompts["task_description"].format(
+            function_name=function_name,
+            problem_description=problem_description,
+            function_description=function_description,
+        )
+        # Create async tasks for generating functions, using asyncio.to_thread to offload blocking calls
+        for i in range(population_size):
+            tasks.append(asyncio.to_thread(self.fetch_function, key, function_name, task_description, seed_function))
 
         # Run all tasks concurrently
-        functions = await asyncio.gather(*tasks)
-
-        # Populate the population dictionary with generated functions
-        idx = 0
-        for key in reevo_config.function_name.keys():
-            population[key] = functions[idx:idx+population_size]  # Slice the list to associate the correct number of functions
-            idx += population_size
+        population = await asyncio.gather(*tasks)
 
         return population
