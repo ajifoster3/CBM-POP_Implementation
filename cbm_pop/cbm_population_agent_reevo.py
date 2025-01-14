@@ -178,8 +178,8 @@ class CBMPopulationAgentReevo(Node):
         return lt_reflector_operator
 
     def perform_elitism_mutation(self, fitnesses, longterm_reflections):
-        index_min = min(range(len(fitnesses)), key=fitnesses.__getitem__)
-        best_fitness = self.population[index_min]
+        index_max = max(range(len(fitnesses)), key=fitnesses.__getitem__)
+        best_fitness = self.population[index_max]
         elitism_mutation = ElitistMutation()
 
         offspring = []
