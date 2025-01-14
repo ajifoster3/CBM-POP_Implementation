@@ -1,3 +1,4 @@
+from future.standard_library import exclude_local_folder_imports
 from rclpy.node import Node
 from std_msgs.msg import String, Float32
 import rclpy
@@ -9,6 +10,7 @@ from cbm_pop.Problem import Problem
 from cbm_pop.reevo.ShortTermReflector import ShortTermReflector
 from cbm_pop.reevo.LongTermReflector import LongTermReflector
 from cbm_pop.reevo.PopulationGenerator import PopulationGenerator
+from cbm_pop.reevo.ElitistMutation import ElitistMutation
 from cbm_pop.reevo.GeneticAlgorithm import GeneticAlgorithm
 from cbm_pop.reevo.Crossover import Crossover
 from cbm_pop.reevo import reevo_config
@@ -126,7 +128,6 @@ class CBMPopulationAgentReevo(Node):
             for i in range(5):  # Repeat the sampling process 5 times
                 # Randomly sample two unique indexes
                 sampled_indexes = sample(valid_indexes, 2)
-                print(f"Sampling {i + 1}: Sampled indexes: {sampled_indexes}")
                 sample_index_pair_list.append(sampled_indexes)
         else:
             print("Not enough valid fitnesses to sample two unique indexes.")
@@ -155,7 +156,6 @@ class CBMPopulationAgentReevo(Node):
                 worse_code_2=worse_code_2,
                 better_code_2=better_code_2
             )
-            print(reflection)
             reflection_list.append({"reflection": reflection, "better_id": better_idx, "worse_id": worse_idx})
         return reflection_list
 
@@ -190,6 +190,28 @@ class CBMPopulationAgentReevo(Node):
                                                                          reevo_config.problem_description[
                                                                              "task_allocation"])
         return lt_reflector_operator
+
+    def perform_elitism_mutation(self, fitnesses, longterm_reflections):
+        index_min = min(range(len(fitnesses)), key=fitnesses.__getitem__)
+        best_fitness_crossover = self.population[reevo_config.function_name["ga_crossover"]][index_min]
+        best_fitness_mutation = self.population[reevo_config.function_name["ga_mutation"]][index_min]
+        elitism_mutation = ElitistMutation()
+
+        crossover_offspring = []
+        mutation_offspring = []
+
+        for i in range(5):
+            crossover_offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_crossover"],
+                                                             reevo_config.problem_description["task_allocation"],
+                                                             longterm_reflections,
+                                                             "ga_crossover_v1",
+                                                             best_fitness_crossover))
+            mutation_offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_mutation"],
+                                                             reevo_config.problem_description["task_allocation"],
+                                                             longterm_reflections,
+                                                             "ga_mutation_v1",
+                                                             best_fitness_mutation))
+        return {"ga_crossover": crossover_offspring, "ga_mutation": mutation_offspring}
 
 
 def generate_problem(num_tasks):
@@ -245,16 +267,26 @@ def main(args=None):
 
     fitnesses = agent.get_solution_fitnesses()
 
-    for solution_fitness in fitnesses:
-        print(solution_fitness)
-
     reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
 
     # Current Choice: Evaluate both operators at once, crossover individually.
     crossover_offspring = agent.perform_crossover(agent.population, reflections)
 
+
+
     longterm_reflections = agent.perform_longterm_reflection(reflections)
-    print("LTR:" + longterm_reflections)
+
+    elitism_mutation_offspring = agent.perform_elitism_mutation(fitnesses, longterm_reflections)
+
+    combined_offspring = {
+        "ga_crossover": crossover_offspring["ga_crossover"] + elitism_mutation_offspring["ga_crossover"],
+        "ga_mutation": crossover_offspring["ga_mutation"] + elitism_mutation_offspring["ga_mutation"]
+    }
+
+    for operator in combined_offspring:
+        for offspring in combined_offspring[operator]:
+            print(offspring)
+            print()
 
     try:
         try:
