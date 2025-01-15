@@ -47,7 +47,7 @@ class GeneticAlgorithm:
 
             if self.is_operators_invalid:
                 return -1
-        return initial_fittest - min(
+        return min(
             Fitness.fitness_function(solution, cost_matrix=self.cost_matrix) for solution in population)
 
     def ga_iteration(self, population):

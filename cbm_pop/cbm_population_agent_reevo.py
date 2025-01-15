@@ -109,7 +109,7 @@ class CBMPopulationAgentReevo(Node):
                                                  5,
                                                  self.population[solution_ID],
                                                  self.cost_matrix)
-            solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(100))
+            solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(500))
         for fitness in solution_fitnesses:
             print(fitness)
         return solution_fitnesses
@@ -178,8 +178,11 @@ class CBMPopulationAgentReevo(Node):
         return lt_reflector_operator
 
     def perform_elitism_mutation(self, fitnesses, longterm_reflections):
-        index_max = max(range(len(fitnesses)), key=fitnesses.__getitem__)
-        best_fitness = self.population[index_max]
+        index_min = min(
+            (i for i, fitness in enumerate(fitnesses) if fitness != -1),
+            key=fitnesses.__getitem__)
+        best_fitness = self.population[index_min]
+        print("fitness: " + str(fitnesses[index_min]))
         elitism_mutation = ElitistMutation()
 
         offspring = []
@@ -243,25 +246,25 @@ def main(args=None):
         num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
         cost_matrix=problem.cost_matrix
     )
+    i = 1
+    while True:
+        print("iteration " + str(i))
+        fitnesses = agent.get_solution_fitnesses()
+        print("Calculated Fitnesses")
 
-    fitnesses = agent.get_solution_fitnesses()
-    print("Calculated Fitnesses")
+        reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
+        print("Performed short term reflections")
+        # Current Choice: Evaluate both operators at once, crossover individually.
+        crossover_offspring = agent.perform_crossover(agent.population, reflections)
+        print("Performed crossover")
+        longterm_reflections = agent.perform_longterm_reflection(reflections)
+        print("Performed long term reflections")
+        elitism_mutation_offspring = agent.perform_elitism_mutation(fitnesses, longterm_reflections)
+        print("Performed elitism mutation")
 
-    reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
-    print("Performed short term reflections")
-    # Current Choice: Evaluate both operators at once, crossover individually.
-    crossover_offspring = agent.perform_crossover(agent.population, reflections)
-    print("Performed crossover")
-    longterm_reflections = agent.perform_longterm_reflection(reflections)
-    print("Performed long term reflections")
-    elitism_mutation_offspring = agent.perform_elitism_mutation(fitnesses, longterm_reflections)
-    print("Performed elitism mutation")
+        combined_offspring = crossover_offspring + elitism_mutation_offspring
+        agent.population = combined_offspring
 
-    combined_offspring = crossover_offspring + elitism_mutation_offspring
-
-    for offspring in combined_offspring:
-        print(offspring)
-        print()
 
     try:
         try:
