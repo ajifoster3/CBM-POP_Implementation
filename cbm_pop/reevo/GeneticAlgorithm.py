@@ -140,6 +140,10 @@ class GeneticAlgorithm:
                 return False
 
             # Validate task distribution among agents
+            if not all(isinstance(task_count, int) for task_count in tasks_per_agent):
+                print(f"Invalid tasks_per_agent (non-integer values): {tasks_per_agent}")
+                return False
+
             if sum(tasks_per_agent) != self.number_of_tasks:
                 print(f"Tasks per agent do not sum to the total number of tasks: {tasks_per_agent}")
                 return False
@@ -150,6 +154,10 @@ class GeneticAlgorithm:
 
             start_idx = 0
             for task_count in tasks_per_agent:
+                if not isinstance(start_idx, int) or not isinstance(task_count, int):
+                    print(f"Invalid slicing indices: start_idx={start_idx}, task_count={task_count}")
+                    return False
+
                 assigned_tasks = order_of_tasks[start_idx:start_idx + task_count]
 
                 # Check if assigned tasks match the required number
