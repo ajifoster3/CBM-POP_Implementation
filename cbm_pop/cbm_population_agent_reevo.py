@@ -1,4 +1,5 @@
 from future.standard_library import exclude_local_folder_imports
+from numpy.f2py.auxfuncs import throw_error
 from rclpy.node import Node
 from std_msgs.msg import String, Float32
 import rclpy
@@ -109,7 +110,7 @@ class CBMPopulationAgentReevo(Node):
                                                  5,
                                                  self.population[solution_ID],
                                                  self.cost_matrix)
-            solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(500))
+            solution_fitnesses.append(genetic_algorithm.run_genetic_algorithm(4000))
         for fitness in solution_fitnesses:
             print(fitness)
         return solution_fitnesses
@@ -119,7 +120,7 @@ class CBMPopulationAgentReevo(Node):
         A single step of the `run` method, executed periodically by the ROS2 timer.
         """
 
-    def perform_short_term_reflection(self, population, fitnesses):
+    async def perform_short_term_reflection(self, population, fitnesses):
         valid_indexes = [index for index, fitness in enumerate(fitnesses) if fitness != -1]
 
         sample_index_pair_list = []
@@ -134,7 +135,7 @@ class CBMPopulationAgentReevo(Node):
             print("Not enough valid fitnesses to sample two unique indexes.")
 
         reflection_list = []
-
+        tasks = []
         for sample_index_pair in sample_index_pair_list:
             # Sort the indexes based on their fitness values in ascending order (lower is better)
             better_idx, worse_idx = sorted(sample_index_pair, key=lambda idx: fitnesses[idx])
@@ -142,34 +143,47 @@ class CBMPopulationAgentReevo(Node):
             # Assign the corresponding population values
             better_code = population[better_idx]  # Lower fitness (better)
             worse_code = population[worse_idx]  # Higher fitness (worse)
-
             short_term_reflector = ShortTermReflector()
-            reflection = short_term_reflector.fetch_reflection(
-                function_name=reevo_config.function_name["ga_combined"],
-                problem_description=reevo_config.problem_description["task_allocation"],
-                function_description=reevo_config.function_description["ga_combined"],
-                worse_code=worse_code,
-                better_code=better_code
-            )
-            reflection_list.append({"reflection": reflection, "better_id": better_idx, "worse_id": worse_idx})
+            tasks.append(asyncio.to_thread(
+                lambda b_idx=better_idx, w_idx=worse_idx: {
+                    "reflection": short_term_reflector.fetch_reflection(
+                        function_name=reevo_config.function_name["ga_combined"],
+                        problem_description=reevo_config.problem_description["task_allocation"],
+                        function_description=reevo_config.function_description["ga_combined"],
+                        worse_code=worse_code,
+                        better_code=better_code
+                    ),
+                    "better_id": b_idx,
+                    "worse_id": w_idx
+                }
+            ))
+
+        # Run all tasks concurrently
+        reflection_list = await asyncio.gather(*tasks)
         return reflection_list
 
-    def perform_crossover(self, population, reflections):
+    async def perform_crossover(self, population, reflections):
         offspring_population = []
+        tasks = []
         for reflection in reflections:
             crossover = Crossover()
-            offspring_operator = crossover.perform_crossover(
-                function_name=reevo_config.function_name["ga_combined"],
-                task_description=reevo_config.problem_description["task_allocation"],
-                function_signature0="heuristics_v0",
-                worse_code=population[reflection["worse_id"]],
-                function_signature1="heuristics_v1",
-                better_code=population[reflection["better_id"]],
-                shortterm_reflection=reflection["reflection"])
-            offspring_population.append(offspring_operator)
+            tasks.append(asyncio.to_thread(
+                lambda: {
+                    "offspring": crossover.perform_crossover(
+                        function_name=reevo_config.function_name["ga_combined"],
+                        task_description=reevo_config.problem_description["task_allocation"],
+                        function_signature0="heuristics_v0",
+                        worse_code=population[reflection["worse_id"]],
+                        function_signature1="heuristics_v1",
+                        better_code=population[reflection["better_id"]],
+                        shortterm_reflection=reflection["reflection"]
+                    )
+                }
+            ))
+        offspring_population = await asyncio.gather(*tasks)
         return offspring_population
 
-    def perform_longterm_reflection(self, shortterm_reflections):
+    async def perform_longterm_reflection(self, shortterm_reflections):
         st_reflections = ''.join([entry['reflection'] for entry in shortterm_reflections])
         lt_reflector = LongTermReflector()
         lt_reflector_operator = lt_reflector.perform_longterm_reflection(st_reflections,
@@ -177,22 +191,26 @@ class CBMPopulationAgentReevo(Node):
                                                                              "task_allocation"])
         return lt_reflector_operator
 
-    def perform_elitism_mutation(self, fitnesses, longterm_reflections):
+    async def perform_elitism_mutation(self, fitnesses, longterm_reflections):
         index_min = min(
             (i for i, fitness in enumerate(fitnesses) if fitness != -1),
             key=fitnesses.__getitem__)
         best_fitness = self.population[index_min]
         print("fitness: " + str(fitnesses[index_min]))
         elitism_mutation = ElitistMutation()
-
-        offspring = []
-
+        tasks = []
         for i in range(5):
-            offspring.append(elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_combined"],
-                                                             reevo_config.problem_description["task_allocation"],
-                                                             longterm_reflections,
-                                                             "ga_combined_v1",
-                                                             best_fitness))
+            tasks.append(asyncio.to_thread(
+                lambda: {
+                    "offspring": elitism_mutation.perform_elitism_mutation(reevo_config.function_name["ga_combined"],
+                                                                            reevo_config.problem_description[
+                                                                                "task_allocation"],
+                                                                            longterm_reflections,
+                                                                            "ga_combined_v1",
+                                                                            best_fitness)
+                }
+            ))
+        offspring = await asyncio.gather(*tasks)
         return offspring
 
 
@@ -213,12 +231,28 @@ def generate_problem(num_tasks):
     return cost_matrix
 
 
-async def ros_loop(node):
+async def ros_loop(agent):
     """
     Async ROS spin loop.
     """
     while rclpy.ok():
-        rclpy.spin_once(node, timeout_sec=0)
+        rclpy.spin_once(agent, timeout_sec=0)
+        fitnesses = agent.get_solution_fitnesses()
+        print("Calculated Fitnesses")
+
+        reflections = await agent.perform_short_term_reflection(agent.population, fitnesses)
+        print("Performed short term reflections")
+        # Current Choice: Evaluate both operators at once, crossover individually.
+        crossover_offspring = await agent.perform_crossover(agent.population, reflections)
+        print("Performed crossover")
+        longterm_reflections = await agent.perform_longterm_reflection(reflections)
+        print("Performed long term reflections")
+        elitism_mutation_offspring = await agent.perform_elitism_mutation(fitnesses, longterm_reflections)
+        print("Performed elitism mutation")
+
+        combined_offspring = crossover_offspring + elitism_mutation_offspring
+        agent.population = [entry['offspring'] for entry in combined_offspring]
+
         await asyncio.sleep(0.01)  # Small sleep to allow cooperative multitasking
 
 
@@ -246,25 +280,6 @@ def main(args=None):
         num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
         cost_matrix=problem.cost_matrix
     )
-    i = 1
-    while True:
-        print("iteration " + str(i))
-        fitnesses = agent.get_solution_fitnesses()
-        print("Calculated Fitnesses")
-
-        reflections = agent.perform_short_term_reflection(agent.population, fitnesses)
-        print("Performed short term reflections")
-        # Current Choice: Evaluate both operators at once, crossover individually.
-        crossover_offspring = agent.perform_crossover(agent.population, reflections)
-        print("Performed crossover")
-        longterm_reflections = agent.perform_longterm_reflection(reflections)
-        print("Performed long term reflections")
-        elitism_mutation_offspring = agent.perform_elitism_mutation(fitnesses, longterm_reflections)
-        print("Performed elitism mutation")
-
-        combined_offspring = crossover_offspring + elitism_mutation_offspring
-        agent.population = combined_offspring
-
 
     try:
         try:
