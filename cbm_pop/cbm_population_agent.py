@@ -13,12 +13,16 @@ import rclpy
 from rclpy.executors import MultiThreadedExecutor
 import threading
 from cbm_pop_interfaces.msg import Solution, Weights
+from enum import Enum
 
+class LearningMethod(Enum):
+    FERREIRA = "Ferreira_et_al."
+    Q_LEARNING = "Q-Learning"
 
 class CBMPopulationAgent(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_tasks, num_tsp_agents, num_iterations,
-                 num_solution_attempts, agent_id, node_name: str, cost_matrix):
+                 num_solution_attempts, agent_id, node_name: str, cost_matrix, learning_method):
         super().__init__(node_name)
         self.pop_size = pop_size
         self.eta = eta
@@ -42,6 +46,7 @@ class CBMPopulationAgent(Node):
         self.no_improvement_attempts = num_solution_attempts
         self.agent_ID = agent_id
         self.received_weight_matrices = []
+        self.learning_method = learning_method
 
         # Iteration state
         self.iteration_count = 0
@@ -273,7 +278,18 @@ class CBMPopulationAgent(Node):
 
         if self.end_of_di_cycle(self.di_cycle_count):
             if self.best_local_improved:
-                self.weight_matrix.weights = self.individual_learning()
+                learning_method_switch = {
+                    LearningMethod.FERREIRA: self.individual_learning_old,
+                    LearningMethod.Q_LEARNING: self.individual_learning
+                }
+
+                # Call the appropriate function based on the current learning method
+                learning_function = learning_method_switch.get(LearningMethod(self.learning_method))
+                if learning_function:
+                    self.weight_matrix.weights = learning_function()
+                else:
+                    self.get_logger().error(f"Unknown learning method: {self.learning_method}")
+
                 self.best_local_improved = False
 
             if self.best_coalition_improved:
@@ -325,9 +341,11 @@ def main(args=None):
     temp_node.declare_parameter("agent_id", 1)  # Default agent_id
     temp_node.declare_parameter("problem_filename", "resources/150_Task_Problem.csv")  # Default problem_filename
     temp_node.declare_parameter("runtime", 60.0)  # Default runtime in seconds
+    temp_node.declare_parameter("learning_method", "Ferreira et al.")  # Default runtime in seconds
     agent_id = temp_node.get_parameter("agent_id").value
     problem_filename = temp_node.get_parameter("problem_filename").value
     runtime = temp_node.get_parameter("runtime").value
+    learning_method = temp_node.get_parameter("learning_method").value
     temp_node.destroy_node()  # Clean up the temporary node
 
     num_tasks = 150
@@ -341,7 +359,7 @@ def main(args=None):
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_tasks=num_tasks, num_tsp_agents=5, num_iterations=1000,
         num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
-        cost_matrix=problem.cost_matrix
+        cost_matrix=problem.cost_matrix, learning_method=learning_method
     )
 
     # Timer to shut down the node after `runtime` seconds

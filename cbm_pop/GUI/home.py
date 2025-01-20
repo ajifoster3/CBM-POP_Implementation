@@ -12,8 +12,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QGroupBox,
     QProgressBar,
-    QSpinBox,
+    QSpinBox, QComboBox, QTabWidget,
 )
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import subprocess
@@ -44,24 +45,36 @@ class MainWindow(QMainWindow):
         agent_group = self.create_agent_form_group("Agent Configuration")
         tracker_group = self.create_tracker_form_group("Tracker Configuration")
 
-        # Matplotlib canvas (Center area)
-        self.canvas = FigureCanvas(Figure(figsize=(5, 3)))
-        self.ax = self.canvas.figure.add_subplot(111)
-        self.ax.set_title("CBM-POP Visualization")
+        # Tab widget for plots
+        self.tab_widget = QTabWidget()  # Create a tab widget
+        # Enable closable tabs
+        self.tab_widget.setTabsClosable(True)
+        # Connect the tab close signal to the remove_tab method
+        self.tab_widget.tabCloseRequested.connect(self.remove_tab)
+        self.add_new_tab("Initial Tab")  # Add an initial empty tab for the first run
+
+        # Combine agent and tracker configuration into one layout
+        config_layout = QVBoxLayout()
+        config_layout.addWidget(agent_group)
+        config_layout.addWidget(tracker_group)
+        config_layout.addStretch()  # Add stretch below the forms to push them to the top
+
+        # Create a group box for the combined configuration forms
+        config_group = QGroupBox()
+        config_group.setLayout(config_layout)
 
         # Layout setup
-        main_layout.addWidget(agent_group, 0, 1)  # Top right
-        main_layout.addWidget(tracker_group, 1, 1)  # Below agent config
-        main_layout.addWidget(self.canvas, 0, 0, 2, 1)  # Center (spanning 2 rows)
+        main_layout.addWidget(self.tab_widget, 0, 0, 2, 1)  # Place the tab widget in the left column, spanning 2 rows
+        main_layout.addWidget(config_group, 0, 1, 1, 1, Qt.AlignmentFlag.AlignTop)  # Place the config group in the right column
         main_layout.addWidget(self.progress_bar, 2, 0)  # Bottom left
         main_layout.addWidget(self.button, 2, 1, 1, 1, Qt.AlignmentFlag.AlignRight)  # Bottom right
 
-        # Set column and row stretch
+        # Adjust stretch settings
         main_layout.setColumnStretch(0, 3)  # Make the plot's column stretchable
         main_layout.setColumnStretch(1, 1)  # Keep the config column fixed in width
-        main_layout.setRowStretch(0, 1)     # Allow the rows to stretch
-        main_layout.setRowStretch(1, 1)
-        main_layout.setRowStretch(2, 0)     # Bottom row (button and progress bar) doesn't stretch
+        main_layout.setRowStretch(0, 1)  # Allow the rows with content to stretch
+        main_layout.setRowStretch(1, 0)  # Prevent unnecessary stretching
+        main_layout.setRowStretch(2, 0)  # Bottom row (button and progress bar) doesn't stretch
 
         # Central widget and layout
         central_widget = QWidget()
@@ -76,15 +89,89 @@ class MainWindow(QMainWindow):
         self.runtime = 0
         self.elapsed_time = 0
 
+    def remove_tab(self, index):
+        """Remove the tab at the specified index."""
+        widget = self.tab_widget.widget(index)
+        if widget:
+            # Remove the widget from the tab
+            self.tab_widget.removeTab(index)
+            # Delete the widget to free resources
+            widget.deleteLater()
+
+    def add_new_tab(self, title, replace_first=False):
+        """Add a new tab with a Matplotlib canvas or replace the first tab."""
+        if replace_first and self.tab_widget.count() > 0:
+            # Replace the first tab
+            first_tab = self.tab_widget.widget(0)
+            layout = first_tab.layout()
+
+            # Clear existing widgets in the first tab
+            while layout.count():
+                child = layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+            # Create a new Matplotlib canvas for the first tab
+            canvas = FigureCanvas(Figure(figsize=(5, 3)))
+            toolbar = NavigationToolbar(canvas, self)
+            ax = canvas.figure.add_subplot(111)
+            ax.set_title(title)
+
+            # Add canvas and toolbar to the layout
+            layout.addWidget(toolbar)
+            layout.addWidget(canvas)
+
+            # Rename the first tab
+            self.tab_widget.setTabText(0, title)
+
+            # Bring the first tab into focus
+            self.tab_widget.setCurrentIndex(0)
+
+            return ax, canvas
+        else:
+            # Add a new tab
+            new_tab = QWidget()
+            layout = QVBoxLayout()
+
+            # Create a new Matplotlib canvas
+            canvas = FigureCanvas(Figure(figsize=(5, 3)))
+            toolbar = NavigationToolbar(canvas, self)
+            ax = canvas.figure.add_subplot(111)
+            ax.set_title(title)
+
+            # Add canvas and toolbar to the layout
+            layout.addWidget(toolbar)
+            layout.addWidget(canvas)
+            new_tab.setLayout(layout)
+
+            # Add the tab to the tab widget
+            self.tab_widget.addTab(new_tab, title)
+
+            # Bring the new tab into focus
+            self.tab_widget.setCurrentIndex(self.tab_widget.count() - 1)
+
+            return ax, canvas
+
     def create_agent_form_group(self, title):
         group_box = QGroupBox(title)
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+        # Number of Agents
         label1 = QLabel("Number of Agents:")
         self.agent_input.setRange(1, 100)  # Set range for agent input
         layout.addWidget(label1)
         layout.addWidget(self.agent_input)
+
+        # Individual Learning Method
+        label2 = QLabel("Individual Learning Method:")
+        self.learning_method_dropdown = QComboBox()  # Create dropdown for learning methods
+        self.learning_method_dropdown.addItems([
+            "Ferreira_et_al.",
+            "Q-Learning"
+        ])
+        layout.addWidget(label2)
+        layout.addWidget(self.learning_method_dropdown)
 
         group_box.setLayout(layout)
         return group_box
@@ -106,10 +193,12 @@ class MainWindow(QMainWindow):
         # Get the values from the input boxes
         instance_count = self.agent_input.value()
         self.runtime = self.runtime_input.value()
+        self.learning_method = self.learning_method_dropdown.currentText()
         self.elapsed_time = 0
 
         # Run the external process in a separate thread to avoid blocking the GUI
-        subprocess.Popen(["./resources/launch_5_agents.sh", str(instance_count), str(float(self.runtime))])
+        subprocess.Popen(["./resources/launch_5_agents.sh", str(instance_count), str(float(self.runtime)),
+                          str(self.learning_method)])
         # Reset and start progress bar
         self.progress_bar.setValue(0)
         # Wait for 2 seconds before starting the progress bar updates
@@ -135,9 +224,13 @@ class MainWindow(QMainWindow):
         # Find the most recent run log
         log_files = glob.glob("resources/run_logs/fitness_logs_*.csv")
         if not log_files:
-            self.ax.clear()
-            self.ax.text(0.5, 0.5, "No run logs found", horizontalalignment='center', verticalalignment='center')
-            self.canvas.draw()
+            # If no log files, update the initial tab or add a new error tab
+            if self.tab_widget.count() == 1 and self.tab_widget.tabText(0) == "Initial Tab":
+                ax, canvas = self.add_new_tab("No Run Logs Found", replace_first=True)
+            else:
+                ax, canvas = self.add_new_tab("No Run Logs Found")
+            ax.text(0.5, 0.5, "No run logs found", horizontalalignment='center', verticalalignment='center')
+            canvas.draw()
             return
 
         latest_file = max(log_files, key=os.path.getctime)  # Get the most recent file
@@ -152,19 +245,30 @@ class MainWindow(QMainWindow):
                     times.append(float(row[0]))
                     fitness_values.append(float(row[1]))
         except Exception as e:
-            self.ax.clear()
-            self.ax.text(0.5, 0.5, f"Error reading log: {e}", horizontalalignment='center', verticalalignment='center')
-            self.canvas.draw()
+            # If there's an error, update the initial tab or add a new error tab
+            if self.tab_widget.count() == 1 and self.tab_widget.tabText(0) == "Initial Tab":
+                ax, canvas = self.add_new_tab("Error", replace_first=True)
+            else:
+                ax, canvas = self.add_new_tab("Error")
+            ax.text(0.5, 0.5, f"Error reading log: {e}", horizontalalignment='center', verticalalignment='center')
+            canvas.draw()
             return
 
-        # Plot the data on the Matplotlib canvas
-        self.ax.clear()
-        self.ax.plot(times, fitness_values, marker='o', linestyle='-')
-        self.ax.set_title("Fitness Values Over Time")
-        self.ax.set_xlabel("Time (seconds)")
-        self.ax.set_ylabel("Fitness Value")
-        self.ax.grid(True)
-        self.canvas.draw()
+        # Determine if the initial tab should be replaced
+        replace_first = (self.tab_widget.count() == 1 and self.tab_widget.tabText(0) == "Initial Tab")
+
+        # Add a new tab for the plot, replacing the first tab only for the initial run
+        if replace_first:
+            ax, canvas = self.add_new_tab("Run 1", replace_first=True)
+        else:
+            ax, canvas = self.add_new_tab(f"Run {self.tab_widget.count() + 1}")
+
+        ax.plot(times, fitness_values, marker='o', linestyle='-')
+        ax.set_title("Fitness Values Over Time")
+        ax.set_xlabel("Time (seconds)")
+        ax.set_ylabel("Fitness Value")
+        ax.grid(True)
+        canvas.draw()
 
 
 if __name__ == "__main__":
