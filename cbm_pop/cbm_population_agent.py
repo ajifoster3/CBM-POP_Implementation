@@ -215,10 +215,7 @@ class CBMPopulationAgent(Node):
             if Fitness.fitness_function(solution, self.cost_matrix) < Fitness.fitness_function(
                     self.coalition_best_solution, self.cost_matrix):
                 self.coalition_best_solution = solution
-                print("new best solution received.")
                 self.coalition_best_agent = msg.id
-        else:
-            print("Received empty message")
 
     def select_random_solution(self):
         temp_solution = sample(population=self.population, k=1)[0]
@@ -312,9 +309,6 @@ class CBMPopulationAgent(Node):
             self.di_cycle_count = 0
 
         self.iteration_count += 1
-        self.get_logger().info(f"Iteration {self.iteration_count}: Current best solution fitness_QL = "
-                               f"{Fitness.fitness_function(self.local_best_solution, self.cost_matrix)}")
-
 
 def generate_problem(num_tasks):
     """
