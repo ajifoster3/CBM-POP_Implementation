@@ -7,16 +7,13 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMainWindow,
     QVBoxLayout,
-    QHBoxLayout,
     QGridLayout,
     QLabel,
-    QLineEdit,
     QGroupBox,
-    QProgressBar, QSpinBox,
+    QProgressBar,
+    QSpinBox,
 )
-from matplotlib.backends.backend_qt5agg import (
-    FigureCanvasQTAgg as FigureCanvas,
-)
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import sys
 
@@ -40,8 +37,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
 
         # Form sections
+        self.agent_input = QSpinBox()  # Save reference to agent input
         agent_group = self.create_agent_form_group("Agent Configuration")
-        tracker_group = self.create_Tracker_form_group("Tracker Configuration")
+        tracker_group = self.create_tracker_form_group("Tracker Configuration")
 
         # Matplotlib canvas (Center area)
         self.canvas = FigureCanvas(Figure(figsize=(5, 3)))
@@ -71,29 +69,36 @@ class MainWindow(QMainWindow):
         group_box = QGroupBox(title)
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
         label1 = QLabel("Number of Agents:")
-        input1 = QSpinBox()
+        self.agent_input.setRange(1, 100)  # Set range for agent input
         layout.addWidget(label1)
-        layout.addWidget(input1)
+        layout.addWidget(self.agent_input)
 
         group_box.setLayout(layout)
         return group_box
 
-    def create_Tracker_form_group(self, title):
+    def create_tracker_form_group(self, title):
         group_box = QGroupBox(title)
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
         label1 = QLabel("Run time:")
-        input1 = QSpinBox()
+        tracker_input = QSpinBox()
+        tracker_input.setRange(1, 100)  # Set range for tracker input
         layout.addWidget(label1)
-        layout.addWidget(input1)
+        layout.addWidget(tracker_input)
 
         group_box.setLayout(layout)
         return group_box
 
     def the_button_was_clicked(self):
-        # Use subprocess to run a terminal command
-        subprocess.run(["./resources/launch_5_agents.sh"])
+        # Get the value from the agent input box
+        instance_count = self.agent_input.value()
+
+        # Use subprocess to run the script with the number of agents as a parameter
+        subprocess.run(["./resources/launch_5_agents.sh", str(instance_count)])
+
         # Simulate progress bar update
         for i in range(101):
             self.progress_bar.setValue(i)

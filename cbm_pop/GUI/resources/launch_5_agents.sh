@@ -7,10 +7,14 @@ source ../../../../install/local_setup.bash
 PACKAGE_NAME="cbm_pop"
 NODE_NAME="cbm_population_agent"
 
-ls
+# Check if INSTANCE_COUNT is passed as an argument
+if [ -z "$1" ]; then
+    echo "Usage: $0 <INSTANCE_COUNT>"
+    exit 1
+fi
 
 # Number of instances to run
-INSTANCE_COUNT=5
+INSTANCE_COUNT=$1
 PROBLEM_FILENAME="resources/150_Task_Problem.csv"
 
 # Base agent_id to start from
