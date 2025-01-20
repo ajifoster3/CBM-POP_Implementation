@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self.bulk_run_input = QSpinBox()  # Save reference to bulk run input
         self.bulk_run_checkbox = QCheckBox("Enable Bulk Run")  # Checkbox for bulk run
         self.bulk_run_checkbox.stateChanged.connect(self.toggle_bulk_run_input)
+        self.bulk_run_count_record = 0
         self.bulk_run_count = 0
 
         agent_group = self.create_agent_form_group("Agent Configuration")
@@ -220,6 +221,7 @@ class MainWindow(QMainWindow):
         self.runtime = self.runtime_input.value()
         self.learning_method = self.learning_method_dropdown.currentText()
         self.bulk_run_count = self.bulk_run_input.value() if self.bulk_run_checkbox.isChecked() else 1
+        self.bulk_run_count_record = self.bulk_run_input.value() if self.bulk_run_checkbox.isChecked() else 1
         self.elapsed_time = 0
 
         self.run_process()
@@ -246,12 +248,14 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(min(int(progress_percentage), 100))
 
         # Stop the timer when progress reaches 100%
-        if self.elapsed_time >= self.runtime:
+        if self.elapsed_time >= self.runtime+2:
             self.timer.stop()
             self.display_latest_run_log()
             if self.bulk_run_checkbox.isChecked() and self.bulk_run_count > 1:
                 self.bulk_run_count = self.bulk_run_count - 1
                 self.run_process()
+            elif self.bulk_run_checkbox.isChecked() and self.bulk_run_count == 1:
+                self.display_bulk_run_log()
 
     def display_latest_run_log(self):
         # Find the most recent run log
@@ -301,6 +305,81 @@ class MainWindow(QMainWindow):
         ax.set_xlabel("Time (seconds)")
         ax.set_ylabel("Fitness Value")
         ax.grid(True)
+        canvas.draw()
+
+    def display_bulk_run_log(self):
+        """Aggregate and display binned statistics for bulk run logs."""
+        log_files = glob.glob("resources/run_logs/fitness_logs_*.csv")
+
+        if not log_files or len(log_files) < self.bulk_run_count_record:
+            self.plot_error("Insufficient run logs for bulk run.")
+            return
+
+        # Initialize lists for all times and fitness values across all runs
+        all_times, all_fitness_values = [], []
+
+        # Read and combine data from all run logs
+        try:
+            for log_file in sorted(log_files)[-self.bulk_run_count_record:]:
+                with open(log_file, mode='r') as file:
+                    reader = csv.reader(file)
+                    next(reader)  # Skip header
+                    for row in reader:
+                        all_times.append(float(row[0]))
+                        all_fitness_values.append(float(row[1]))
+        except Exception as e:
+            self.plot_error(f"Error reading logs: {e}")
+            return
+
+        # Sort combined data by time
+        sorted_data = sorted(zip(all_times, all_fitness_values))
+        all_times, all_fitness_values = zip(*sorted_data)
+
+        # Calculate binned averages and standard deviations
+        bins = 10  # Adjust the number of bins as needed
+        binned_centers, binned_means, binned_stds = self.calculate_binned_statistics(all_times, all_fitness_values,
+                                                                                     bins)
+
+        # Add a new tab for the bulk run statistics
+        ax, canvas = self.add_new_tab("Bulk Run Statistics")
+        ax.errorbar(binned_centers, binned_means, yerr=binned_stds, fmt='o', ecolor='red', capsize=5,
+                    label="Binned Data")
+        ax.set_title("Binned Fitness Values Over Time (Bulk Runs)")
+        ax.set_xlabel("Time (seconds)")
+        ax.set_ylabel("Fitness Value")
+        ax.legend()
+        ax.grid(True)
+        canvas.draw()
+
+        # Reset bulk run count record
+        self.bulk_run_count_record = 0
+
+    def calculate_binned_statistics(self, times, values, bins=10):
+        """Calculate binned averages and standard deviations."""
+        import numpy as np
+
+        # Define bin edges and determine which bin each time falls into
+        bin_edges = np.linspace(min(times), max(times), bins + 1)
+        bin_indices = np.digitize(times, bin_edges) - 1
+
+        # Calculate averages and standard deviations for each bin
+        binned_means = []
+        binned_stds = []
+        binned_centers = []
+        for i in range(bins):
+            bin_values = [values[j] for j in range(len(times)) if bin_indices[j] == i]
+            if bin_values:
+                binned_means.append(np.mean(bin_values))
+                binned_stds.append(np.std(bin_values))
+                binned_centers.append((bin_edges[i] + bin_edges[i + 1]) / 2)
+
+        return binned_centers, binned_means, binned_stds
+
+    def plot_error(self, message):
+        """Display an error message in a new tab."""
+        ax, canvas = self.add_new_tab("Error")
+        ax.text(0.5, 0.5, message, horizontalalignment='center', verticalalignment='center')
+        ax.set_title("Error")
         canvas.draw()
 
 
