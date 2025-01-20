@@ -14,6 +14,7 @@ from rclpy.executors import MultiThreadedExecutor
 import threading
 from cbm_pop_interfaces.msg import Solution, Weights
 
+
 class CBMPopulationAgent(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_tasks, num_tsp_agents, num_iterations,
@@ -60,14 +61,12 @@ class CBMPopulationAgent(Node):
         # Timer for periodic execution of the run loop
         self.run_timer = self.create_timer(0.1, self.run_step)
 
-
-        #Q_learning
+        # Q_learning
         # Q_learning parameter
-        self.lr=0.1 # RL learning Rate
-        self.reward=0 # RL reward initial 0
-        self.new_reward=0 # RL tarafından secilecek. initial 0
-        self.gamma_decay=0.99 # it can be change interms of iteration
-
+        self.lr = 0.1  # RL learning Rate
+        self.reward = 0  # RL reward initial 0
+        self.new_reward = 0  # RL tarafından secilecek. initial 0
+        self.gamma_decay = 0.99  # it can be change interms of iteration
 
     def generate_population(self):
         """
@@ -114,9 +113,26 @@ class CBMPopulationAgent(Node):
         self.previous_experience.append([condition, operator, gain])
         pass
 
+    def individual_learning_old(self):
+        # Update weight matrix (if needed) based on learning (not fully implemented in this example)
+        abs_gain = 0
+        index_best_fitness = -1
+        for i in range(len(self.previous_experience)):
+            current_gain = abs_gain + self.previous_experience[i][2]
+            if current_gain < abs_gain:
+                index_best_fitness = i
+            abs_gain += current_gain
 
+            # Get elements before index_best_fitness
+        elements_before_best = self.previous_experience[:index_best_fitness + 1] if index_best_fitness != -1 else []
+        condition_operator_pairs = [(item[0], item[1]) for item in elements_before_best]
+        condition_operator_pairs = list(set(condition_operator_pairs))
+        for pair in condition_operator_pairs:
+            self.weight_matrix.weights[pair[0].value][pair[1].value - 1] += self.eta
 
-    #----------------------------------------------------------------------------
+        return self.weight_matrix.weights
+
+    # ----------------------------------------------------------------------------
     def individual_learning(self):
         """
         Updates the weight matrix (Q(s, a)) using the Q-learning formula.
@@ -133,12 +149,12 @@ class CBMPopulationAgent(Node):
                 self.weight_matrix.weights[condition.value])  # Max Q for current state (proxy for next state)
 
             # Q-learning update formula
-            if gain>0:
-                self.reward=-0.5
-            elif gain==0:
-                self.reward=0
+            if gain > 0:
+                self.reward = -0.5
+            elif gain == 0:
+                self.reward = 0
             else:
-                self.reward=1
+                self.reward = 1
 
             updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
 
@@ -146,11 +162,11 @@ class CBMPopulationAgent(Node):
             self.weight_matrix.weights[condition.value][operator.value - 1] = updated_q
 
         return self.weight_matrix.weights
-    #------------------------------------------------------------------------------------------------
 
+    # ------------------------------------------------------------------------------------------------
 
     def mimetism_learning(self, received_weights, rho):
-        #mimetisim learnng will stay same
+        # mimetisim learnng will stay same
         """
         Perform mimetism learning by updating self.weight_matrix.weights using multiple sets of received weights.
         For each weight in each received set:
@@ -191,9 +207,10 @@ class CBMPopulationAgent(Node):
         # Callback to process incoming weight matrix updates
         if msg is not None and self.coalition_best_solution is not None:
             solution = (msg.order, msg.allocations)
-            if Fitness.fitness_function(solution, self.cost_matrix) > Fitness.fitness_function(
-                        self.coalition_best_solution, self.cost_matrix):
+            if Fitness.fitness_function(solution, self.cost_matrix) < Fitness.fitness_function(
+                    self.coalition_best_solution, self.cost_matrix):
                 self.coalition_best_solution = solution
+                print("new best solution received.")
                 self.coalition_best_agent = msg.id
         else:
             print("Received empty message")
@@ -232,7 +249,7 @@ class CBMPopulationAgent(Node):
 
         if self.local_best_solution is None or \
                 Fitness.fitness_function(c_new, self.cost_matrix) < Fitness.fitness_function(
-                    self.local_best_solution, self.cost_matrix):
+            self.local_best_solution, self.cost_matrix):
             self.local_best_solution = deepcopy(c_new)
             self.best_local_improved = True
             self.no_improvement_attempt_count = 0
@@ -241,7 +258,7 @@ class CBMPopulationAgent(Node):
 
         if self.coalition_best_solution is None or \
                 Fitness.fitness_function(c_new, self.cost_matrix) < Fitness.fitness_function(
-                    self.coalition_best_solution, self.cost_matrix):
+            self.coalition_best_solution, self.cost_matrix):
             self.coalition_best_solution = deepcopy(c_new)
             self.coalition_best_agent = self.agent_ID
             self.best_coalition_improved = True
@@ -283,7 +300,6 @@ class CBMPopulationAgent(Node):
                                f"{Fitness.fitness_function(self.local_best_solution, self.cost_matrix)}")
 
 
-
 def generate_problem(num_tasks):
     """
     Randomly generates a problem of size `number_tasks`
@@ -300,12 +316,13 @@ def generate_problem(num_tasks):
     np.fill_diagonal(cost_matrix, 0)
     return cost_matrix
 
+
 def main(args=None):
     rclpy.init(args=args)
 
     node = Node("parameter_loader")
     node.declare_parameter("agent_id", 1)  # Default agent_id
-    node.declare_parameter("problem_filename", "src/cbm_pop/150_Task_Problem.csv")  # Default problem_filename
+    node.declare_parameter("problem_filename", "150_Task_Problem.csv")  # Default problem_filename
 
     agent_id = node.get_parameter("agent_id").value
     problem_filename = node.get_parameter("problem_filename").value
@@ -332,6 +349,7 @@ def main(args=None):
     finally:
         agent.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
