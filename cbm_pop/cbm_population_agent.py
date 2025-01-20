@@ -320,13 +320,15 @@ def generate_problem(num_tasks):
 def main(args=None):
     rclpy.init(args=args)
 
-    node = Node("parameter_loader")
-    node.declare_parameter("agent_id", 1)  # Default agent_id
-    node.declare_parameter("problem_filename", "150_Task_Problem.csv")  # Default problem_filename
-
-    agent_id = node.get_parameter("agent_id").value
-    problem_filename = node.get_parameter("problem_filename").value
-    node.destroy_node()  # Clean up the temporary node
+    # Create a temporary node to load parameters
+    temp_node = Node("parameter_loader")
+    temp_node.declare_parameter("agent_id", 1)  # Default agent_id
+    temp_node.declare_parameter("problem_filename", "resources/150_Task_Problem.csv")  # Default problem_filename
+    temp_node.declare_parameter("runtime", 60.0)  # Default runtime in seconds
+    agent_id = temp_node.get_parameter("agent_id").value
+    problem_filename = temp_node.get_parameter("problem_filename").value
+    runtime = temp_node.get_parameter("runtime").value
+    temp_node.destroy_node()  # Clean up the temporary node
 
     num_tasks = 150
     problem = Problem()
@@ -342,8 +344,18 @@ def main(args=None):
         cost_matrix=problem.cost_matrix
     )
 
+    # Timer to shut down the node after `runtime` seconds
+    def shutdown_callback():
+        agent.get_logger().info("Runtime completed. Shutting down.")
+        agent.destroy_node()
+        rclpy.shutdown()
+
+    # Schedule the shutdown timer
+    agent.create_timer(runtime, shutdown_callback)
+
+    # Run the ROS2 executor
     try:
-        rclpy.spin(agent)  # Run the ROS2 executor
+        rclpy.spin(agent)
     except KeyboardInterrupt:
         pass
     finally:

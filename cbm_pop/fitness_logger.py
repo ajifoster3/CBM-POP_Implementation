@@ -1,3 +1,6 @@
+import csv
+from datetime import datetime
+
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -18,7 +21,7 @@ class FitnessLogger(Node):
 
         num_tasks = 150
         problem = Problem()
-        problem.load_cost_matrix("150_Task_Problem.csv", "csv")
+        problem.load_cost_matrix("resources/150_Task_Problem.csv", "csv")
         self.cost_matrix = problem.cost_matrix
 
         # Store logs with timestamps
@@ -73,6 +76,7 @@ class FitnessLogger(Node):
             times = [log[0] for log in self.iteration_logs]
             fitness_values = [log[1] for log in self.iteration_logs]
 
+            # Plot the fitness values
             plt.figure()
             plt.plot(times, fitness_values, marker='o', linestyle='-')
             plt.xlabel("Time (seconds)")
@@ -80,9 +84,23 @@ class FitnessLogger(Node):
             plt.title("Fitness Values Over Time")
             plt.grid(True)
             plt.show()
-        else:
-            self.get_logger().info("No fitness values to plot.")
 
+            # Generate a unique filename with a timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            directory = "resources/run_logs/"
+            file_name = f"{directory}fitness_logs_{timestamp}.csv"
+            try:
+                with open(file_name, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    # Write the header
+                    writer.writerow(["Time(seconds)", "Fitness_Value"])
+                    # Write the data
+                    writer.writerows(self.iteration_logs)
+                self.get_logger().info(f"Fitness values logged to {file_name}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to log fitness values: {e}")
+        else:
+            self.get_logger().info("No fitness values to plot or log.")
 
 def main(args=None):
     rclpy.init(args=args)
