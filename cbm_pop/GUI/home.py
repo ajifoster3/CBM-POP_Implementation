@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QGroupBox,
     QProgressBar,
-    QSpinBox, QComboBox, QTabWidget,
+    QSpinBox, QComboBox, QTabWidget, QCheckBox
 )
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -42,8 +42,14 @@ class MainWindow(QMainWindow):
         # Form sections
         self.agent_input = QSpinBox()  # Save reference to agent input
         self.runtime_input = QSpinBox()  # Save reference to runtime input
+        self.bulk_run_input = QSpinBox()  # Save reference to bulk run input
+        self.bulk_run_checkbox = QCheckBox("Enable Bulk Run")  # Checkbox for bulk run
+        self.bulk_run_checkbox.stateChanged.connect(self.toggle_bulk_run_input)
+        self.bulk_run_count = 0
+
         agent_group = self.create_agent_form_group("Agent Configuration")
         tracker_group = self.create_tracker_form_group("Tracker Configuration")
+        run_group = self.create_run_form_group("Run Configuration")
 
         # Tab widget for plots
         self.tab_widget = QTabWidget()  # Create a tab widget
@@ -53,10 +59,11 @@ class MainWindow(QMainWindow):
         self.tab_widget.tabCloseRequested.connect(self.remove_tab)
         self.add_new_tab("Initial Tab")  # Add an initial empty tab for the first run
 
-        # Combine agent and tracker configuration into one layout
+        # Combine agent, tracker, and run configuration into one layout
         config_layout = QVBoxLayout()
         config_layout.addWidget(agent_group)
         config_layout.addWidget(tracker_group)
+        config_layout.addWidget(run_group)
         config_layout.addStretch()  # Add stretch below the forms to push them to the top
 
         # Create a group box for the combined configuration forms
@@ -88,6 +95,10 @@ class MainWindow(QMainWindow):
         # Variables for progress tracking
         self.runtime = 0
         self.elapsed_time = 0
+
+    def toggle_bulk_run_input(self):
+        """Enable or disable the bulk run input based on the checkbox."""
+        self.bulk_run_input.setEnabled(self.bulk_run_checkbox.isChecked())
 
     def remove_tab(self, index):
         """Remove the tab at the specified index."""
@@ -189,18 +200,37 @@ class MainWindow(QMainWindow):
         group_box.setLayout(layout)
         return group_box
 
+    def create_run_form_group(self, title):
+        group_box = QGroupBox(title)
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.bulk_run_input.setRange(1, 100)  # Set range for bulk run number
+        self.bulk_run_input.setEnabled(False)  # Initially disabled
+
+        layout.addWidget(self.bulk_run_checkbox)  # Add the checkbox
+        layout.addWidget(self.bulk_run_input)  # Add the spin box
+
+        group_box.setLayout(layout)
+        return group_box
+
     def start_progress(self):
         # Get the values from the input boxes
-        instance_count = self.agent_input.value()
+        self.instance_count = self.agent_input.value()
         self.runtime = self.runtime_input.value()
         self.learning_method = self.learning_method_dropdown.currentText()
+        self.bulk_run_count = self.bulk_run_input.value() if self.bulk_run_checkbox.isChecked() else 1
         self.elapsed_time = 0
 
+        self.run_process()
+
+    def run_process(self):
         # Run the external process in a separate thread to avoid blocking the GUI
-        subprocess.Popen(["./resources/launch_5_agents.sh", str(instance_count), str(float(self.runtime)),
-                          str(self.learning_method)])
+        subprocess.Popen(["./resources/launch_5_agents.sh", str(self.instance_count), str(float(self.runtime)),
+                          str(self.learning_method), str(self.bulk_run_count)])
         # Reset and start progress bar
         self.progress_bar.setValue(0)
+        self.elapsed_time = 0
         # Wait for 2 seconds before starting the progress bar updates
         QTimer.singleShot(3000, self.start_timer)
 
@@ -219,6 +249,9 @@ class MainWindow(QMainWindow):
         if self.elapsed_time >= self.runtime:
             self.timer.stop()
             self.display_latest_run_log()
+            if self.bulk_run_checkbox.isChecked() and self.bulk_run_count > 1:
+                self.bulk_run_count = self.bulk_run_count - 1
+                self.run_process()
 
     def display_latest_run_log(self):
         # Find the most recent run log
