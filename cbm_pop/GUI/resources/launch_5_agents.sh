@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 source ../../../../install/local_setup.bash
 
 # Name of the package and node
