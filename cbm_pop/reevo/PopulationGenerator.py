@@ -9,7 +9,6 @@ class PopulationGenerator:
         self.client = OpenAI(
             api_key=os.environ['CBM_POP_APIKEY'],
             organization='org-aHxs2hPTZTYEPh8GyXZaDPmI',
-            project='proj_bMwxaxkpiKADKECQtHOCCUjh',
         )
 
     def fetch_function(self, key, function_name, task_description, seed_function):
@@ -49,27 +48,47 @@ class PopulationGenerator:
         return function
 
     async def generate_population(self, population_size):
-        population = {}
+        population_dict = {}
 
-        # Prepare tasks for all keys in reevo_config
-        tasks = []
+        # Collect all tasks across all keys
+        all_tasks = []
 
-        key = reevo_config.function_name["ga_combined"]
+        # Iterate over each key in reevo_config.function_name
+        for key in reevo_config.function_name:
+            # Prepare parameters for this key
+            function_name = reevo_config.function_name[key]
+            problem_description = reevo_config.problem_description["task_allocation"]
+            function_description = reevo_config.function_description[key]
+            seed_function = reevo_config.seed_function[key]
+            task_description = reevo_config.prompts["task_description"].format(
+                function_name=function_name,
+                problem_description=problem_description,
+                function_description=function_description,
+            )
 
-        function_name = reevo_config.function_name[key]
-        problem_description = reevo_config.problem_description["task_allocation"]
-        function_description = reevo_config.function_description[key]
-        seed_function = reevo_config.seed_function[key]
-        task_description = reevo_config.prompts["task_description"].format(
-            function_name=function_name,
-            problem_description=problem_description,
-            function_description=function_description,
+            # Create population_size tasks for this key
+            for i in range(population_size):
+                # Create a task that runs fetch_function and tags the result with the key
+                task = asyncio.create_task(
+                    self._fetch_and_tag(key, function_name, task_description, seed_function)
+                )
+                all_tasks.append(task)
+
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*all_tasks)
+
+        # Initialize population_dict with empty lists for each key
+        population_dict = {key: [] for key in reevo_config.function_name}
+
+        # Populate the results into the dictionary
+        for key, result in results:
+            population_dict[key].append(result)
+
+        return population_dict
+
+    async def _fetch_and_tag(self, key, function_name, task_description, seed_function):
+        """Helper to tag results with their key"""
+        result = await asyncio.to_thread(
+            self.fetch_function, key, function_name, task_description, seed_function
         )
-        # Create async tasks for generating functions, using asyncio.to_thread to offload blocking calls
-        for i in range(population_size):
-            tasks.append(asyncio.to_thread(self.fetch_function, key, function_name, task_description, seed_function))
-
-        # Run all tasks concurrently
-        population = await asyncio.gather(*tasks)
-
-        return population
+        return key, result
