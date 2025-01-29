@@ -1,4 +1,5 @@
 import random
+import sys
 import numpy as np
 from copy import deepcopy
 from random import sample
@@ -326,53 +327,60 @@ def generate_problem(num_tasks):
     np.fill_diagonal(cost_matrix, 0)
     return cost_matrix
 
-
 def main(args=None):
-    rclpy.init(args=args)
-
-    # Create a temporary node to load parameters
-    temp_node = Node("parameter_loader")
-    temp_node.declare_parameter("agent_id", 1)  # Default agent_id
-    temp_node.declare_parameter("problem_filename", "resources/150_Task_Problem.csv")  # Default problem_filename
-    temp_node.declare_parameter("runtime", 60.0)  # Default runtime in seconds
-    temp_node.declare_parameter("learning_method", "Ferreira et al.")  # Default runtime in seconds
-    agent_id = temp_node.get_parameter("agent_id").value
-    problem_filename = temp_node.get_parameter("problem_filename").value
-    runtime = temp_node.get_parameter("runtime").value
-    learning_method = temp_node.get_parameter("learning_method").value
-    temp_node.destroy_node()  # Clean up the temporary node
-
-    num_tasks = 150
-    problem = Problem()
-    problem.load_cost_matrix(problem_filename, "csv")
-    num_tasks = len(problem.cost_matrix)
-
-    # Create and run the agent node
-    node_name = f"cbm_population_agent_{agent_id}"
-    agent = CBMPopulationAgent(
-        pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
-        num_tasks=num_tasks, num_tsp_agents=5, num_iterations=1000,
-        num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
-        cost_matrix=problem.cost_matrix, learning_method=learning_method
-    )
-
-    # Timer to shut down the node after `runtime` seconds
-    def shutdown_callback():
-        agent.get_logger().info("Runtime completed. Shutting down.")
-        agent.destroy_node()
-        rclpy.shutdown()
-
-    # Schedule the shutdown timer
-    agent.create_timer(runtime, shutdown_callback)
-
-    # Run the ROS2 executor
     try:
-        rclpy.spin(agent)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        agent.destroy_node()
-        rclpy.shutdown()
+        rclpy.init(args=args)
+
+        temp_node = Node("parameter_loader")
+        temp_node.declare_parameter("agent_id", 1)
+        temp_node.declare_parameter("problem_filename", "resources/150_Task_Problem.csv")
+        temp_node.declare_parameter("runtime", 60.0)
+        temp_node.declare_parameter("learning_method", "Ferreira et al.")
+
+        agent_id = temp_node.get_parameter("agent_id").value
+        problem_filename = temp_node.get_parameter("problem_filename").value
+        runtime = temp_node.get_parameter("runtime").value
+        learning_method = temp_node.get_parameter("learning_method").value
+        temp_node.destroy_node()
+
+        problem = Problem()
+        problem.load_cost_matrix(problem_filename, "csv")
+        num_tasks = len(problem.cost_matrix)
+
+        node_name = f"cbm_population_agent_{agent_id}"
+        agent = CBMPopulationAgent(
+            pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
+            num_tasks=num_tasks, num_tsp_agents=5, num_iterations=1000,
+            num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
+            cost_matrix=problem.cost_matrix, learning_method=learning_method
+        )
+
+        def shutdown_callback():
+            agent.get_logger().info("Runtime completed. Shutting down.")
+            agent.destroy_node()
+            if rclpy.ok():
+                rclpy.shutdown()
+
+        agent.create_timer(runtime, shutdown_callback)
+
+        try:
+            rclpy.spin(agent)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if rclpy.ok():
+                agent.destroy_node()
+                rclpy.shutdown()
+
+    except Exception as e:
+        print(f"An error occurred: {e}", file=sys.stderr)
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
 
 
 if __name__ == '__main__':

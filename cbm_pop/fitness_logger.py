@@ -1,4 +1,5 @@
 import csv
+import sys
 from datetime import datetime
 
 import rclpy
@@ -103,8 +104,19 @@ class FitnessLogger(Node):
             self.get_logger().info("No fitness values to plot or log.")
 
 def main(args=None):
-    rclpy.init(args=args)
-    fitness_logger = FitnessLogger()
+    try:
+        rclpy.init(args=args)
+    except Exception as e:
+        print(f"Failed to initialize ROS 2: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        fitness_logger = FitnessLogger()
+    except Exception as e:
+        print(f"Failed to initialize FitnessLogger: {e}", file=sys.stderr)
+        if rclpy.ok():
+            rclpy.shutdown()
+        sys.exit(1)
 
     try:
         rclpy.spin(fitness_logger)
@@ -112,7 +124,8 @@ def main(args=None):
         pass
     finally:
         fitness_logger.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():  # Prevent double shutdown
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
