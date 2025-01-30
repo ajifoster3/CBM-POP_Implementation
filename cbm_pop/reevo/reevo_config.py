@@ -107,12 +107,12 @@ prompts = dict(
     '''
 )
 function_name = dict(
-    TWO_SWAP="TWO_SWAP",
-    ONE_MOVE="ONE_MOVE",
-    BEST_COST_ROUTE_CROSSOVER="BEST_COST_ROUTE_CROSSOVER",
-    INTRA_DEPOT_REMOVAL="INTRA_DEPOT_REMOVAL",
-    INTRA_DEPOT_SWAPPING="INTRA_DEPOT_SWAPPING",
-    SINGLE_ACTION_REROUTING="SINGLE_ACTION_REROUTING",
+    two_swap="two_swap",
+    one_move="one_move",
+    best_cost_route_crossover="best_cost_route_crossover",
+    intra_depot_removal="intra_depot_removal",
+    intra_depot_swapping="intra_depot_swapping",
+    single_action_rerouting="single_action_rerouting",
 
 )
 function_description = dict(
@@ -157,7 +157,7 @@ function_description = dict(
     order of tasks.
     You're also given access to the cost_matrix, where element [i,j] is the cost of edge i->j.
     """,
-    TWO_SWAP=
+    two_swap=
     """
     "Swapping two pairs of subsequent tasks (each pair as a unit) from two different agents
         to improve solution fitness by minimizing traversal cost."
@@ -166,7 +166,7 @@ function_description = dict(
         :param cost_matrix: The matrix used to calculate traversal costs
         :return: A child solution with improved fitness
     """,
-    ONE_MOVE=
+    one_move=
     """
     "Removal of a node from the solution and insertion at the point
         that maximizes solution fitness"
@@ -178,7 +178,7 @@ function_description = dict(
         :param current_solution: The current solution to be optimised
         :return: A child solution
     """,
-    BEST_COST_ROUTE_CROSSOVER=
+    best_cost_route_crossover=
     """
     "For two parent chromosomes, select a route to be removed
         from each. The removed nodes are inserted into the
@@ -190,7 +190,7 @@ function_description = dict(
         :param current_solution: The current solution as a parent
         :return: A child solution
     """,
-    INTRA_DEPOT_REMOVAL=
+    intra_depot_removal=
     """
     "Two cut-points in the chromosome associated with the
         robot initial position are selected and the genetic
@@ -198,7 +198,7 @@ function_description = dict(
         :param current_solution: The current solution to be mutated
         :return: A child solution
     """,
-    INTRA_DEPOT_SWAPPING=
+    intra_depot_swapping=
     """
     Perform an intra-depot mutation by selecting two random routes
         from the solution and moving a randomly selected task from
@@ -206,7 +206,7 @@ function_description = dict(
         :param current_solution: The current solution to be mutated
         :return: A mutated child solution
     """,
-    SINGLE_ACTION_REROUTING=
+    single_action_rerouting=
     """
     "Re-routing involves randomly selecting one action and removing
         it from the existing route. The action is then inserted at the
@@ -368,7 +368,7 @@ seed_function = dict(
     
         return offspring
     """,
-    TWO_SWAP=
+    two_swap=
     """
     def two_swap(current_solution, cost_matrix):
         # Deep copy to avoid modifying the original solution
@@ -429,7 +429,7 @@ seed_function = dict(
 
         return task_order, agent_task_counts
     """,
-    ONE_MOVE=
+    one_move=
     """
     def one_move(current_solution, cost_matrix):
         # Deep copy to avoid modifying the original solution
@@ -496,7 +496,7 @@ seed_function = dict(
 
         return task_order, agent_task_counts
     """,
-    BEST_COST_ROUTE_CROSSOVER=
+    best_cost_route_crossover=
     """
     def best_cost_route_crossover(current_solution, population, cost_matrix):
         def find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task):
@@ -570,7 +570,7 @@ seed_function = dict(
         return new_solution_task_order, new_solution_task_counts # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
 
     """,
-    INTRA_DEPOT_REMOVAL=
+    intra_depot_removal=
     """
     def intra_depot_removal(current_solution):
         # Extract task order and agent task counts from current solution
@@ -592,7 +592,7 @@ seed_function = dict(
             task_order[cut1:cut2 + 1] = reversed(task_order[cut1:cut2 + 1])
         return task_order, agent_task_counts
     """,
-    INTRA_DEPOT_SWAPPING=
+    intra_depot_swapping=
     """
     def intra_depot_swapping(current_solution):
         # Extract task order and agent task counts from the current solution
@@ -627,7 +627,7 @@ seed_function = dict(
         # Return the modified solution
         return task_order, agent_task_counts
     """,
-    SINGLE_ACTION_REROUTING=
+    single_action_rerouting=
     """
     def single_action_rerouting(current_solution, cost_matrix):
         def find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task):
