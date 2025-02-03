@@ -89,22 +89,22 @@ class CBMPopulationAgentLLM(Node):
 
     def run_step(self):
         """Main execution step for the optimization algorithm."""
-        if self._check_stopping_criteria():
+        if self.check_stopping_criteria():
             return
 
-        condition = self._determine_condition()
-        self._handle_no_improvement()
+        condition = self.determine_condition()
+        self.handle_no_improvement()
 
         operator = self.operator_functions.choose_operator(
             self.weight_matrix.weights, condition
         )
 
-        c_new = self._apply_operator_and_validate(operator)
-        gain = self._calculate_gain(c_new)
-        self._update_experience_and_counters(condition, operator, gain)
+        c_new = self.apply_operator_and_validate(operator)
+        gain = self.calculate_gain(c_new)
+        self.update_experience_and_counters(condition, operator, gain)
 
-        self._update_best_solutions(c_new)
-        self._handle_cycle_updates()
+        self.update_best_solutions(c_new)
+        self.handle_cycle_updates()
 
         self.iteration_count += 1
 
@@ -137,11 +137,11 @@ class CBMPopulationAgentLLM(Node):
                 self.failed_operator_dict
             )
             if not self.is_solutions_valid(c_new):
-                self._handle_invalid_solution(operator, index)
+                self.handle_invalid_solution(operator, index)
                 return self.current_solution
             return c_new
         except Exception as e:
-            self._handle_operator_error(operator, e)
+            self.handle_operator_error(operator, e)
             return self.current_solution
 
     def handle_invalid_solution(self, operator, index):
@@ -167,8 +167,8 @@ class CBMPopulationAgentLLM(Node):
 
     def update_best_solutions(self, new_solution):
         """Update local and coalition best solutions."""
-        self._update_local_best(new_solution)
-        self._update_coalition_best(new_solution)
+        self.update_local_best(new_solution)
+        self.update_coalition_best(new_solution)
         self.current_solution = new_solution
 
     def update_local_best(self, new_solution):
@@ -188,7 +188,7 @@ class CBMPopulationAgentLLM(Node):
             self.coalition_best_solution = deepcopy(new_solution)
             self.coalition_best_agent = self.agent_ID
             self.best_coalition_improved = True
-            self._publish_best_solution()
+            self.publish_best_solution()
 
     def publish_best_solution(self):
         """Publish current best solution to the coalition."""
@@ -204,18 +204,18 @@ class CBMPopulationAgentLLM(Node):
         self.oe_cycle_count += 1
 
         if self.end_of_di_cycle(self.di_cycle_count):
-            self._handle_di_cycle_operations()
+            self.handle_di_cycle_operations()
         if self.end_of_oe_cycle(self.oe_cycle_count):
-            self._handle_oe_cycle_operations()
+            self.handle_oe_cycle_operations()
 
     def handle_di_cycle_operations(self):
         """Handle end of DI cycle operations."""
         if self.best_local_improved:
-            self._perform_individual_learning()
+            self.perform_individual_learning()
             self.best_local_improved = False
 
         if self.best_coalition_improved:
-            self._publish_weight_matrix()
+            self.publish_weight_matrix()
             self.best_coalition_improved = False
 
         if self.received_weight_matrices:
