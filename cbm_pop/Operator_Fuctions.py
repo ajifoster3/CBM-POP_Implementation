@@ -2,69 +2,29 @@ import random
 from copy import deepcopy
 from enum import Enum
 from cbm_pop.Fitness import Fitness
+from cbm_pop.Operator import Operator
 
-class Operator(Enum):
-    TWO_SWAP = 1
-    ONE_MOVE = 2
-    BEST_COST_ROUTE_CROSSOVER = 3
-    INTRA_DEPOT_REMOVAL = 4
-    INTRA_DEPOT_SWAPPING = 5
-    #INTER_DEPOT_SWAPPING = 6 Not applicable due to lack of depots
-    SINGLE_ACTION_REROUTING = 6
-
-class OperatorFunctionsLLM:
+class OperatorFunctions:
     # Define operator function map with static method references
     operator_function_map = {
-        Operator.TWO_SWAP: lambda current_solution, cost_matrix: OperatorFunctionsLLM.two_swap(current_solution, cost_matrix),
-        Operator.ONE_MOVE: lambda current_solution, cost_matrix: OperatorFunctionsLLM.one_move(current_solution, cost_matrix),
+        Operator.TWO_SWAP: lambda current_solution, cost_matrix: OperatorFunctions.two_swap(current_solution, cost_matrix),
+        Operator.ONE_MOVE: lambda current_solution, cost_matrix: OperatorFunctions.one_move(current_solution, cost_matrix),
         Operator.BEST_COST_ROUTE_CROSSOVER: lambda current_solution,
                                                    population,
-                                                   cost_matrix: OperatorFunctionsLLM.best_cost_route_crossover(
+                                                   cost_matrix: OperatorFunctions.best_cost_route_crossover(
             current_solution, population, cost_matrix),
-        Operator.INTRA_DEPOT_REMOVAL: lambda current_solution: OperatorFunctionsLLM.intra_depot_removal(current_solution),
-        Operator.INTRA_DEPOT_SWAPPING: lambda current_solution: OperatorFunctionsLLM.intra_depot_swapping(
+        Operator.INTRA_DEPOT_REMOVAL: lambda current_solution: OperatorFunctions.intra_depot_removal(current_solution),
+        Operator.INTRA_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.intra_depot_swapping(
             current_solution),
         #Operator.INTER_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.inter_depot_swapping(
         #    current_solution),
-        Operator.SINGLE_ACTION_REROUTING: lambda current_solution, cost_matrix: OperatorFunctionsLLM.single_action_rerouting(
+        Operator.SINGLE_ACTION_REROUTING: lambda current_solution, cost_matrix: OperatorFunctions.single_action_rerouting(
             current_solution, cost_matrix),
     }
 
-    def __init__(self, operator_functions_code: dict = None):
-        # Load the functions dynamically
-        self.operator_function_map = self._load_operator_functions(operator_functions_code)
-        print("I didnt break! :D")
 
-    def _load_operator_functions(self, operator_functions_code):
-        """
-        Dynamically loads Python functions from a dictionary of code strings.
-        """
-        operator_function_map = {}
-        for operator, function_codes in operator_functions_code.items():
-            operator_function_map[operator] = []
-            i = 1
-            for code in function_codes:
-                try:
-                    code = code.replace("''' python\n", "").strip("'''")
-                    # Create a local namespace to store the function
-                    local_namespace = {}
-                    # Execute the code to define the function
-                    exec(code, globals(), local_namespace)
-                    # Retrieve the function from the local namespace
-                    function_name = operator.name.lower()+"_o"+str(i)
-                    print(f"Function name: {function_name}")
-                    function = local_namespace[function_name]
-                    # Add the function to the operator's list
-                    operator_function_map[operator].append(function)
-                    print(f"Loaded function for operator {operator}: {function_name}")
-                    i = i + 1
-                except Exception as e:
-                    print(f"Failed to load function for operator {operator}: {e}")
-                    i = i + 1
-                    continue
-        return operator_function_map
-
-    def choose_operator(self, weights, condition):
+    @staticmethod
+    def choose_operator(weights, condition):
         """
         Stochastically choose an operator for a condition using the weights.
         :param weights: Weights
@@ -80,8 +40,8 @@ class OperatorFunctionsLLM:
         chosen_operator = random.choices(operators, weights=row, k=1)[0]
         return chosen_operator
 
-
-    def apply_op(self, operator, current_solution, population, cost_matrix=None):
+    @staticmethod
+    def apply_op(operator, current_solution, population, cost_matrix=None):
         """
         Apply the operator to the current solution and return the newly generated child solution.
         :param cost_matrix: Cost matrix to calculate the cost
@@ -92,25 +52,16 @@ class OperatorFunctionsLLM:
         """
         # Get the function based on the operator
 
-        operator_name = operator.name.lower()
-        
-        print("Applying operator: ", operator_name, " ...")
-        print("Current Solution: ", current_solution)
-        print("Population: ", population)
-        print("Cost Matrix: ", cost_matrix)
-        if operator in self.operator_function_map:
+        if operator in OperatorFunctions.operator_function_map:
             # Call the function and pass arguments as needed
             if operator == Operator.BEST_COST_ROUTE_CROSSOVER:
-                print("in operator == Operator.BEST_COST_ROUTE_CROSSOVER")
-                return self.operator_function_map[operator][0](current_solution, population, cost_matrix)
+                return OperatorFunctions.operator_function_map[operator](current_solution, population, cost_matrix)
             elif (operator == Operator.SINGLE_ACTION_REROUTING
                   or operator == Operator.TWO_SWAP
                   or operator == Operator.ONE_MOVE):
-                    print("in operator == Operator.SINGLE_ACTION_REROUTING or Operator.TWO_SWAP or Operator.ONE_MOVE")
-                    return self.operator_function_map[operator][0](current_solution, cost_matrix)
+                    return OperatorFunctions.operator_function_map[operator](current_solution, cost_matrix)
             else:
-                print("in else")
-                return self.operator_function_map[operator][0](current_solution)
+                return OperatorFunctions.operator_function_map[operator](current_solution)
 
         # Raise an exception if the operator is not recognized
         raise Exception("Something went wrong! The selected operation doesn't exist.")
@@ -163,8 +114,8 @@ class OperatorFunctionsLLM:
             temp_count_counter += 1
 
         for task in selected_path[:]:  # Use a copy of selected_path to iterate safely
-            OperatorFunctionsLLM.find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
-                                                         task)
+            OperatorFunctions.find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
+                                                      task)
 
         # Return the modified solution as the child solution
         return new_solution_task_order, new_solution_task_counts # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
@@ -315,8 +266,8 @@ class OperatorFunctionsLLM:
                            sum(agent_task_counts[:i]) <= task_index < sum(agent_task_counts[:i + 1]))
         agent_task_counts[agent_index] -= 1
 
-        OperatorFunctionsLLM.find_best_task_position(cost_matrix, agent_task_counts, task_order,
-                                                     task)
+        OperatorFunctions.find_best_task_position(cost_matrix, agent_task_counts, task_order,
+                                                  task)
         return task_order, agent_task_counts
 
 

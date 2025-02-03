@@ -5,7 +5,7 @@ from copy import deepcopy
 from random import sample
 from cbm_pop.Condition import ConditionFunctions
 from cbm_pop.Fitness import Fitness
-from cbm_pop.Operator import OperatorFunctions
+from cbm_pop.Operator_Fuctions import OperatorFunctions
 from cbm_pop.WeightMatrix import WeightMatrix
 from cbm_pop.Problem import Problem
 from rclpy.node import Node
