@@ -1,6 +1,8 @@
 import random
 from copy import deepcopy
 from enum import Enum
+from typing import Optional, Dict, List
+
 from cbm_pop.Fitness import Fitness
 from cbm_pop.Operator import Operator
 
@@ -25,7 +27,6 @@ class OperatorFunctionsLLM:
     def __init__(self, operator_functions_code: dict = None):
         # Load the functions dynamically
         self.operator_function_map = self._load_operator_functions(operator_functions_code)
-        print("I didnt break! :D")
 
     def _load_operator_functions(self, operator_functions_code):
         """
@@ -44,11 +45,9 @@ class OperatorFunctionsLLM:
                     exec(code, globals(), local_namespace)
                     # Retrieve the function from the local namespace
                     function_name = operator.name.lower()+"_o"+str(i)
-                    print(f"Function name: {function_name}")
                     function = local_namespace[function_name]
                     # Add the function to the operator's list
                     operator_function_map[operator].append(function)
-                    print(f"Loaded function for operator {operator}: {function_name}")
                     i = i + 1
                 except Exception as e:
                     print(f"Failed to load function for operator {operator}: {e}")
@@ -72,40 +71,59 @@ class OperatorFunctionsLLM:
         chosen_operator = random.choices(operators, weights=row, k=1)[0]
         return chosen_operator
 
-
-    def apply_op(self, operator, current_solution, population, cost_matrix=None):
+    def apply_op(
+            self,
+            operator: Operator,
+            current_solution,
+            population,
+            cost_matrix=None,
+            failed_operator_dict: Optional[Dict[Operator, List[int]]] = None
+    ) -> tuple:
         """
         Apply the operator to the current solution and return the newly generated child solution.
         :param cost_matrix: Cost matrix to calculate the cost
         :param operator: The operator to be applied
         :param current_solution: The current solution
         :param population: The population
-        :return: A child solution
+        :param failed_operator_dict: Dictionary tracking failed function indexes per operator
+        :return: A tuple containing the child solution and the index of the selected function
         """
-        # Get the function based on the operator
+        if operator not in self.operator_function_map:
+            raise ValueError(f"Operator {operator} not found in operator_function_map")
 
-        operator_name = operator.name.lower()
-        
-        print("Applying operator: ", operator_name, " ...")
-        print("Current Solution: ", current_solution)
-        print("Population: ", population)
-        print("Cost Matrix: ", cost_matrix)
-        if operator in self.operator_function_map:
-            # Call the function and pass arguments as needed
+        functions = self.operator_function_map[operator]
+        if not functions:
+            raise ValueError(f"No functions registered for operator {operator}")
+
+        # Get valid indexes (exclude previously failed ones)
+        failed_indexes = failed_operator_dict.get(operator, []) if failed_operator_dict else []
+        available_indexes = [i for i in range(len(functions)) if i not in failed_indexes]
+
+        # Fallback to all indexes if none are available (all have failed)
+        if not available_indexes:
+            available_indexes = list(range(len(functions)))
+
+        # Randomly select an index from available candidates
+        random_index = random.choice(available_indexes)
+        selected_function = functions[random_index]
+
+        try:
+            # Execute the selected function with appropriate arguments
             if operator == Operator.BEST_COST_ROUTE_CROSSOVER:
-                print("in operator == Operator.BEST_COST_ROUTE_CROSSOVER")
-                return self.operator_function_map[operator][0](current_solution, population, cost_matrix)
-            elif (operator == Operator.SINGLE_ACTION_REROUTING
-                  or operator == Operator.TWO_SWAP
-                  or operator == Operator.ONE_MOVE):
-                    print("in operator == Operator.SINGLE_ACTION_REROUTING or Operator.TWO_SWAP or Operator.ONE_MOVE")
-                    return self.operator_function_map[operator][0](current_solution, cost_matrix)
+                child_solution = selected_function(current_solution, population, cost_matrix)
+            elif operator in {Operator.SINGLE_ACTION_REROUTING, Operator.TWO_SWAP, Operator.ONE_MOVE}:
+                child_solution = selected_function(current_solution, cost_matrix)
             else:
-                print("in else")
-                return self.operator_function_map[operator][0](current_solution)
+                child_solution = selected_function(current_solution)
 
-        # Raise an exception if the operator is not recognized
-        raise Exception("Something went wrong! The selected operation doesn't exist.")
+            return child_solution, random_index
+
+        except Exception as e:
+            print(f"Error applying operator {operator} with function index {random_index}: {e}")
+            # Record failed index if tracking is enabled
+            if failed_operator_dict is not None:
+                failed_operator_dict.setdefault(operator, []).append(random_index)
+            return None, random_index
 
     # Diversifiers
     @staticmethod

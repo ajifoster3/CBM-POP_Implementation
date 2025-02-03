@@ -1,7 +1,7 @@
 import unittest
 from unittest import TestCase
 
-from Operator import OperatorFunctions
+from cbm_pop.Operator import OperatorFunctions
 from WeightMatrix import*
 from Condition import*
 

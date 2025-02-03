@@ -1,5 +1,5 @@
 from collections import Counter
-from cbm_pop.Operator_LLM import Operator
+from cbm_pop.Operator import Operator
 from enum import Enum
 
 class Condition(Enum):

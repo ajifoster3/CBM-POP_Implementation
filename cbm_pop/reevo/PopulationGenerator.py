@@ -89,7 +89,12 @@ class PopulationGenerator:
 
     async def _fetch_and_tag(self, key, function_name, task_description, seed_function, operator_index):
         """Helper to tag results with their key"""
-        result = await asyncio.to_thread(
-            self.fetch_function, key, function_name, task_description, seed_function, operator_index
-        )
-        return key, result
+        while True:
+            try:
+                result = await asyncio.to_thread(
+                    self.fetch_function, key, function_name, task_description, seed_function, operator_index
+                )
+                return key, result
+            except Exception as e:
+                print(f"Error fetching function for key {key}: {e}")
+                return key, ""

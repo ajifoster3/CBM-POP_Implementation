@@ -51,14 +51,13 @@ cleanup() {
 # Set up a trap to handle script termination
 trap cleanup SIGINT SIGTERM EXIT
 
-ros2 run $PACKAGE_NAME llm_interface_agent --ros-args -p runtime:=$TRACKING_TIMEOUT &
-
 # Loop to start multiple instances
 for i in $(seq 0 $((INSTANCE_COUNT - 1))); do
     AGENT_ID=$((START_AGENT_ID + i))  # Increment agent_id
     echo "Launching instance with agent_id=$AGENT_ID and problem_filename=$PROBLEM_FILENAME..."
     # Run each instance with parameters
     ros2 run $PACKAGE_NAME $NODE_NAME --ros-args -p agent_id:=$AGENT_ID -p problem_filename:=$PROBLEM_FILENAME -p runtime:=$TRACKING_TIMEOUT -p learning_method:=$LEARNING_METHOD &
+    ros2 run $PACKAGE_NAME llm_interface_agent --ros-args -p runtime:=$TRACKING_TIMEOUT -p agent_id:=$AGENT_ID &
 done
 
 # Launch cbm_fitness_logger as a background process

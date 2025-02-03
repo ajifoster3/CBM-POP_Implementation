@@ -5,7 +5,7 @@ from copy import deepcopy
 from random import sample
 from cbm_pop.Condition import ConditionFunctions
 from cbm_pop.Fitness import Fitness
-from cbm_pop.Operator_LLM import OperatorFunctionsLLM, Operator
+from cbm_pop.Operator_Functions_LLM import OperatorFunctionsLLM, Operator
 from cbm_pop.WeightMatrix import WeightMatrix
 from cbm_pop.Problem import Problem
 from rclpy.node import Node
@@ -49,6 +49,12 @@ class CBMPopulationAgentLLM(Node):
         self.received_weight_matrices = []
         self.learning_method = learning_method
         self.operator_functions = None
+        # Initialize the dictionary
+        self.failed_operator_dict = {}
+
+        # Populate the dictionary with Operator enum elements as keys and empty lists as values
+        for operator in Operator:
+            self.failed_operator_dict[operator] = []
 
         # Iteration state
         self.iteration_count = 0
@@ -76,7 +82,7 @@ class CBMPopulationAgentLLM(Node):
         # Add subscription to 'generated_population' topic
         self.generated_population_sub = self.create_subscription(
             GeneratedPopulation,  # Adjust the message type as needed
-            'generated_population',
+            'generated_population_'+str(self.agent_ID),
             self.generated_population_callback,
             10
         )
@@ -250,6 +256,74 @@ class CBMPopulationAgentLLM(Node):
         if temp_solution != self.current_solution:
             return temp_solution
 
+    def is_solutions_valid(self, solution):
+        """
+        Validates that all solutions in the population meet the required constraints:
+        - Each solution must have exactly two unpackable elements.
+        - Each task is assigned exactly once across all agents.
+        - The number of tasks assigned to each agent matches the specified distribution.
+        - Tasks per agent should sum to the total number of tasks, and each element should be greater than 1.
+
+        Parameters:
+            population (list): List of solutions to validate. Each solution is a tuple of
+                               (order_of_tasks, tasks_per_agent).
+
+        Returns:
+            bool: True if all solutions are valid, False otherwise.
+        """
+        # Ensure the solution has exactly two unpackable elements
+        if not isinstance(solution, tuple) or len(solution) != 2:
+            print(f"Invalid solution structure: {solution}")
+            return False
+
+        order_of_tasks, tasks_per_agent = solution
+
+        # Ensure all elements in order_of_tasks are integers
+        if not all(isinstance(task, int) for task in order_of_tasks):
+            print(f"Invalid tasks (non-integer values) in solution: {order_of_tasks}")
+            return False
+
+        # Ensure all tasks are unique and within range
+        if sorted(order_of_tasks) != list(range(self.num_tasks)):
+            print(f"Invalid tasks in solution: {order_of_tasks}")
+            return False
+
+        # Validate task distribution among agents
+        if not all(isinstance(task_count, int) for task_count in tasks_per_agent):
+            print(f"Invalid tasks_per_agent (non-integer values): {tasks_per_agent}")
+            return False
+
+        if sum(tasks_per_agent) != self.num_tasks:
+            print(f"Tasks per agent do not sum to the total number of tasks: {tasks_per_agent}")
+            return False
+
+        if any(task_count <= 1 for task_count in tasks_per_agent):
+            print(f"Each agent must have more than 1 task: {tasks_per_agent}")
+            return False
+
+        start_idx = 0
+        for task_count in tasks_per_agent:
+            if not isinstance(start_idx, int) or not isinstance(task_count, int):
+                print(f"Invalid slicing indices: start_idx={start_idx}, task_count={task_count}")
+                return False
+
+            assigned_tasks = order_of_tasks[start_idx:start_idx + task_count]
+
+            # Check if assigned tasks match the required number
+            if len(assigned_tasks) != task_count:
+                print(f"Invalid task count for an agent: {assigned_tasks}")
+                return False
+
+            start_idx += task_count
+
+        # Ensure no extra tasks remain unassigned
+        if start_idx != len(order_of_tasks):
+            print(f"Extra unassigned tasks detected: {order_of_tasks[start_idx:]}")
+            return False
+
+        return True
+
+
     def run_step(self):
         """
         A single step of the `run` method, executed periodically by the ROS2 timer.
@@ -258,21 +332,32 @@ class CBMPopulationAgentLLM(Node):
             self.get_logger().info("Stopping criterion met. Shutting down.")
             self.run_timer.cancel()
             return
-        print(self.previous_experience)
         condition = ConditionFunctions.perceive_condition(self.previous_experience)
 
         if self.no_improvement_attempt_count >= self.no_improvement_attempts:
             self.current_solution = self.select_random_solution()
             self.no_improvement_attempt_count = 0
-        print(self.weight_matrix.weights)
-        print(condition)
-        operator = self.operator_functions.choose_operator(self.weight_matrix.weights, condition)
-        c_new = self.operator_functions.apply_op(
-            operator,
-            self.current_solution,
-            self.population,
-            self.cost_matrix
-        )
+        operator = self.operator_functions.choose_operator(
+            self.weight_matrix.weights,
+            condition)
+        index = None
+        try:
+            c_new, index = self.operator_functions.apply_op(
+                operator,
+                self.current_solution,
+                self.population,
+                self.cost_matrix,
+                self.failed_operator_dict
+            )
+            if not self.is_solutions_valid(c_new):
+                print("Invalid solution detected from operator: ", operator, ", index :", index)
+                c_new = self.current_solution
+                self.failed_operator_dict[operator].append(index)
+        except Exception as e:
+            print("Interesting error!! ", e)
+            c_new = self.current_solution
+            self.failed_operator_dict[operator].append(index)
+
         gain = Fitness.fitness_function(c_new, self.cost_matrix) - \
                Fitness.fitness_function(self.current_solution, self.cost_matrix)
         self.update_experience(condition, operator, gain)
@@ -338,6 +423,8 @@ class CBMPopulationAgentLLM(Node):
             self.oe_cycle_count = 0
 
         self.iteration_count += 1
+
+
 
 def generate_problem(num_tasks):
     """
