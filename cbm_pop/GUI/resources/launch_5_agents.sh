@@ -5,9 +5,9 @@ source ../../../../install/local_setup.bash
 
 # Name of the package and node
 PACKAGE_NAME="cbm_pop"
-NODE_NAME="cbm_population_agent"
+NODE_NAME="cbm_population_agent_llm"
 
-ros2 run $PACKAGE_NAME llm_interface_agent &
+
 
 # Check if INSTANCE_COUNT is passed as an argument
 if [ -z "$1" ]; then
@@ -50,6 +50,8 @@ cleanup() {
 
 # Set up a trap to handle script termination
 trap cleanup SIGINT SIGTERM EXIT
+
+ros2 run $PACKAGE_NAME llm_interface_agent --ros-args -p runtime:=$TRACKING_TIMEOUT &
 
 # Loop to start multiple instances
 for i in $(seq 0 $((INSTANCE_COUNT - 1))); do

@@ -1,5 +1,4 @@
 import asyncio
-
 import rclpy
 from rclpy.node import Node
 
@@ -15,28 +14,43 @@ class LLMInterfaceAgent(Node):
         self.population_generator = PopulationGenerator()
         self.population_publisher = self.create_publisher(GeneratedPopulation, 'generated_population', 10)
 
-async def generate_population(node):
-    # Placeholder async method to simulate population generation
-    print("Generating population...")
-    population = await node.population_generator.generate_population(10)
+    async def generate_population(self):
+        # Placeholder async method to simulate population generation
+        print("Generating population...")
+        population = await self.population_generator.generate_population(10)
 
-    # Publish the population after generation
-    population_msg = GeneratedPopulation()
-    for key, field in reevo_config.function_name.items():
-        setattr(population_msg, key.lower(), population[field])  # Directly set the list of strings for each key
-    node.population_publisher.publish(population_msg)
-    print("Population published.")
-
+        # Publish the population after generation
+        population_msg = GeneratedPopulation()
+        for key, field in reevo_config.function_name.items():
+            setattr(population_msg, key.lower(), population[field])  # Directly set the list of strings for each key
+        self.population_publisher.publish(population_msg)
+        print("Population published.")
 
 
 def main():
     rclpy.init(args=None)
     temp_node = Node("parameter_loader")
+    temp_node.declare_parameter("runtime", 60.0)
+
     agent_id = temp_node.declare_parameter('agent_id', '0').value  # Replace 'default_agent_id' with the default value
+    runtime = temp_node.get_parameter("runtime").value
+
     temp_node.destroy_node()
     agent = LLMInterfaceAgent('llm_interface_agent_node', agent_id)
     print("LLMInterfaceAgent has been initialized.")
-    population = asyncio.run(generate_population(agent))
+
+    def shutdown_callback():
+        agent.get_logger().info("LLM-Interface-agent Runtime completed. Shutting down.")
+        agent.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    # Create a timer with the specified runtime
+    agent.create_timer(runtime, shutdown_callback)
+
+    # Run the asynchronous population generation task
+    asyncio.run(agent.generate_population())
+
     try:
         rclpy.spin(agent)
     except KeyboardInterrupt:
@@ -45,3 +59,7 @@ def main():
         agent.destroy_node()
         if rclpy.ok():  # Prevent double shutdown
             rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

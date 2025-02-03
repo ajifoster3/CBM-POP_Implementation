@@ -11,7 +11,7 @@ class PopulationGenerator:
             organization='org-aHxs2hPTZTYEPh8GyXZaDPmI',
         )
 
-    def fetch_function(self, key, function_name, task_description, seed_function):
+    def fetch_function(self, key, function_name, task_description, seed_function, operator_index):
         function = ""
         # Synchronous call to OpenAI API
         stream = self.client.chat.completions.create(
@@ -27,7 +27,8 @@ class PopulationGenerator:
                         task_description=task_description,
                         seed_function=seed_function,
                         function_name=function_name,
-                        initial_longterm_reflection=""
+                        initial_longterm_reflection="",
+                        operator_index=operator_index
                     )
                 }
             ],
@@ -70,7 +71,7 @@ class PopulationGenerator:
             for i in range(population_size):
                 # Create a task that runs fetch_function and tags the result with the key
                 task = asyncio.create_task(
-                    self._fetch_and_tag(key, function_name, task_description, seed_function)
+                    self._fetch_and_tag(key, function_name, task_description, seed_function, operator_index=i + 1)
                 )
                 all_tasks.append(task)
 
@@ -86,9 +87,9 @@ class PopulationGenerator:
 
         return population_dict
 
-    async def _fetch_and_tag(self, key, function_name, task_description, seed_function):
+    async def _fetch_and_tag(self, key, function_name, task_description, seed_function, operator_index):
         """Helper to tag results with their key"""
         result = await asyncio.to_thread(
-            self.fetch_function, key, function_name, task_description, seed_function
+            self.fetch_function, key, function_name, task_description, seed_function, operator_index
         )
         return key, result

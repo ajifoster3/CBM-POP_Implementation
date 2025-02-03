@@ -5,7 +5,7 @@ from copy import deepcopy
 from random import sample
 from cbm_pop.Condition import ConditionFunctions
 from cbm_pop.Fitness import Fitness
-from cbm_pop.Operator import OperatorFunctions
+from cbm_pop.Operator_LLM import OperatorFunctionsLLM, Operator
 from cbm_pop.WeightMatrix import WeightMatrix
 from cbm_pop.Problem import Problem
 from rclpy.node import Node
@@ -28,6 +28,7 @@ class CBMPopulationAgentLLM(Node):
         self.eta = eta
         self.rho = rho
         self.di_cycle_length = di_cycle_length
+        self.oe_cycle_length = 10
         self.num_iterations = num_iterations
         self.epsilon = epsilon
         self.num_tasks = num_tasks
@@ -47,10 +48,12 @@ class CBMPopulationAgentLLM(Node):
         self.agent_ID = agent_id
         self.received_weight_matrices = []
         self.learning_method = learning_method
+        self.operator_functions = None
 
         # Iteration state
         self.iteration_count = 0
         self.di_cycle_count = 0
+        self.oe_cycle_count = 0
         self.no_improvement_attempt_count = 0
         self.best_coalition_improved = False
         self.best_local_improved = False
@@ -205,7 +208,12 @@ class CBMPopulationAgentLLM(Node):
     def end_of_di_cycle(self, cycle_count):
         if cycle_count >= self.di_cycle_length:
             return True
-        return False  # Placeholder; replace with actual condition
+        return False
+
+    def end_of_oe_cycle(self, cycle_count):
+        if cycle_count >= self.oe_cycle_length:
+            return True
+        return False
 
     def weight_update_callback(self, msg):
         # Callback to process incoming weight matrix updates
@@ -225,17 +233,17 @@ class CBMPopulationAgentLLM(Node):
     def generated_population_callback(self, msg):
         if msg is not None:
             # Extract data from the message into a dictionary of lists
-            self.operator_population_data = {
-                "two_swap": list(msg.two_swap),
-                "one_move": list(msg.one_move),
-                "best_cost_route_crossover": list(msg.best_cost_route_crossover),
-                "intra_depot_removal": list(msg.intra_depot_removal),
-                "intra_depot_swapping": list(msg.intra_depot_swapping),
-                "single_action_rerouting": list(msg.single_action_rerouting)
+            operator_population_data = {
+                Operator.TWO_SWAP: list(msg.two_swap),
+                Operator.ONE_MOVE: list(msg.one_move),
+                Operator.BEST_COST_ROUTE_CROSSOVER: list(msg.best_cost_route_crossover),
+                Operator.INTRA_DEPOT_REMOVAL: list(msg.intra_depot_removal),
+                Operator.INTRA_DEPOT_SWAPPING: list(msg.intra_depot_swapping),
+                Operator.SINGLE_ACTION_REROUTING: list(msg.single_action_rerouting)
             }
+            self.operator_functions = OperatorFunctionsLLM(operator_population_data)
             # Timer for periodic execution of the run loop
             self.run_timer = self.create_timer(0.1, self.run_step)
-            
 
     def select_random_solution(self):
         temp_solution = sample(population=self.population, k=1)[0]
@@ -250,25 +258,24 @@ class CBMPopulationAgentLLM(Node):
             self.get_logger().info("Stopping criterion met. Shutting down.")
             self.run_timer.cancel()
             return
-
+        print(self.previous_experience)
         condition = ConditionFunctions.perceive_condition(self.previous_experience)
 
         if self.no_improvement_attempt_count >= self.no_improvement_attempts:
             self.current_solution = self.select_random_solution()
             self.no_improvement_attempt_count = 0
-
-        operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition)
-        c_new = OperatorFunctions.apply_op(
+        print(self.weight_matrix.weights)
+        print(condition)
+        operator = self.operator_functions.choose_operator(self.weight_matrix.weights, condition)
+        c_new = self.operator_functions.apply_op(
             operator,
             self.current_solution,
             self.population,
             self.cost_matrix
         )
-
         gain = Fitness.fitness_function(c_new, self.cost_matrix) - \
                Fitness.fitness_function(self.current_solution, self.cost_matrix)
         self.update_experience(condition, operator, gain)
-
         if self.local_best_solution is None or \
                 Fitness.fitness_function(c_new, self.cost_matrix) < Fitness.fitness_function(
             self.local_best_solution, self.cost_matrix):
@@ -277,7 +284,6 @@ class CBMPopulationAgentLLM(Node):
             self.no_improvement_attempt_count = 0
         else:
             self.no_improvement_attempt_count += 1
-
         if self.coalition_best_solution is None or \
                 Fitness.fitness_function(c_new, self.cost_matrix) < Fitness.fitness_function(
             self.coalition_best_solution, self.cost_matrix):
@@ -292,7 +298,7 @@ class CBMPopulationAgentLLM(Node):
 
         self.current_solution = c_new
         self.di_cycle_count += 1
-
+        self.oe_cycle_count += 1
         if self.end_of_di_cycle(self.di_cycle_count):
             if self.best_local_improved:
                 learning_method_switch = {
@@ -327,6 +333,9 @@ class CBMPopulationAgentLLM(Node):
 
             self.previous_experience = []
             self.di_cycle_count = 0
+        if self.end_of_oe_cycle(self.oe_cycle_count):
+            print("OE Cycle finished")
+            self.oe_cycle_count = 0
 
         self.iteration_count += 1
 
@@ -374,7 +383,7 @@ def main(args=None):
         )
 
         def shutdown_callback():
-            agent.get_logger().info("Runtime completed. Shutting down.")
+            agent.get_logger().info("CBM-POP agent Runtime completed. Shutting down.")
             agent.destroy_node()
             if rclpy.ok():
                 rclpy.shutdown()

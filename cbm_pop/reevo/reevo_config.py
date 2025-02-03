@@ -21,7 +21,7 @@ prompts = dict(
     
     {seed_function}
     
-    Refer to the format of a trivial design above. Be very creative and give '{function_name}_v2'.
+    Refer to the format of a trivial design above. Be very creative and give '{function_name}_o{operator_index}'.
     Output code only and enclose your code with Python code block: \''' python ... \'''.
     
     {initial_longterm_reflection}
