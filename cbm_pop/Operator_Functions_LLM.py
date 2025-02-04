@@ -77,7 +77,7 @@ class OperatorFunctionsLLM:
             current_solution,
             population,
             cost_matrix=None,
-            failed_operator_dict: Optional[Dict[Operator, List[int]]] = None
+            failed_operator_dict = None
     ) -> tuple:
         """
         Apply the operator to the current solution and return the newly generated child solution.
@@ -96,7 +96,7 @@ class OperatorFunctionsLLM:
             raise ValueError(f"No functions registered for operator {operator}")
 
         # Get valid indexes (exclude previously failed ones)
-        failed_indexes = failed_operator_dict.get(operator, []) if failed_operator_dict else []
+        failed_indexes = failed_operator_dict[operator]
         available_indexes = [i for i in range(len(functions)) if i not in failed_indexes]
 
         # Fallback to all indexes if none are available (all have failed)
@@ -122,7 +122,7 @@ class OperatorFunctionsLLM:
             print(f"Error applying operator {operator} with function index {random_index}: {e}")
             # Record failed index if tracking is enabled
             if failed_operator_dict is not None:
-                failed_operator_dict.setdefault(operator, []).append(random_index)
+                failed_operator_dict[operator].append(random_index)
             return None, random_index
 
     # Diversifiers
