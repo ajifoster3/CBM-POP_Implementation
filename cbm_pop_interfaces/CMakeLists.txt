@@ -12,6 +12,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Solution.msg"
   "msg/Weights.msg"
+  "msg/EnvironmentalRepresentation.msg"
  )
 
 # uncomment the following section in order to fill in

@@ -1,21 +1,21 @@
 prompts = dict(
-    generator_system_prompt =
+    generator_system_prompt=
     '''
     You are an expert in the domain of heuristics. Your task is to design heuristics that can 
     effectively solve optimization problems.
     Your response outputs Python code and nothing else.
     Format your code as a Python code string : \"\''' python ... \'''\".
     ''',
-    reflector_system_prompt =
+    reflector_system_prompt=
     '''
     You are an expert in the domain of optimization heuristics. Your task is to give hints to design better heuristics.
     ''',
-    task_description =
+    task_description=
     '''
     Write a {function_name} function for {problem_description}
     {function_description}
     ''',
-    user_prompt_population_initialisation =
+    user_prompt_population_initialisation=
     '''
     {task_description}
     
@@ -26,7 +26,7 @@ prompts = dict(
     
     {initial_longterm_reflection}
     ''',
-    user_prompt_shortterm_reflection =
+    user_prompt_shortterm_reflection=
     '''
     Below are two {function_name} functions for {problem_description}
     {function_name}:
@@ -43,7 +43,7 @@ prompts = dict(
     You respond with some hints for designing better heuristics, based on the two code versions and using less than
     40 words.
     ''',
-    user_prompt_shortterm_reflection_on_blackbox_COPs =
+    user_prompt_shortterm_reflection_on_blackbox_COPs=
     '''
     Below are two {function_name} functions for {problem_description}
     {function_description}
@@ -60,7 +60,7 @@ prompts = dict(
     heuristics. You may give hints about how edge and node attributes correlate with the black-box objective value.
     Use less than 50 words.
     ''',
-    user_prompt_crossover =
+    user_prompt_crossover=
     '''
     {task_description}
     
@@ -79,7 +79,7 @@ prompts = dict(
     Please write an improved function '{function_name}_v2', according to the reflection. Output code only and 
     enclose your code with Python code block: \''' python ... \'''.
     ''',
-    user_prompt_longterm_reflection =
+    user_prompt_longterm_reflection=
     '''
     Below is your prior long-term reflection on designing heuristics for {problem_description}
     {prior_longterm_reflection}
@@ -90,7 +90,7 @@ prompts = dict(
     Write constructive hints for designing better heuristics, based on prior reflections and new insights and using 
     less than 50 words
     ''',
-    user_prompt_elitist_mutation =
+    user_prompt_elitist_mutation=
     '''
     {task_description}
     
@@ -104,6 +104,35 @@ prompts = dict(
     [Improved code]
     Please write a mutation function '{function_name}_v2', according to the reflection. Output code only and enclose 
     your code with Python code block: \''' python ... \'''.
+    ''',
+    failed_operator_mutation=
+    '''
+    {task_description}
+
+    [Code]
+    {failed_function_code}
+    
+    [Error]
+    {error}
+
+    [Improved code]
+    Please write a function with exactly the same signature, addressing the error given. Output code only and enclose 
+    your code with Python code block: \''' python ... \'''.
+    ''',
+    oe_crossover=
+    '''
+    {task_description}
+    
+    [Worse Code]
+    {worse_function_code}
+    
+    [Better Code]
+    {better_function_code}
+    
+    [Improved Code]
+    Please write a function with exactly the same signature as [Worse Code], that is _o{worse_function_index}.  
+    Based on the relative performance of the two operators, creatively generate an improved function to replace the worse one.
+    Output code only and enclose your code with Python code block: \''' python ... \'''.
     '''
 )
 function_name = dict(
@@ -116,7 +145,7 @@ function_name = dict(
 
 )
 function_description = dict(
-    ga_crossover =
+    ga_crossover=
     """
     "
     Performs a Crossover operation on the Chromosome.
@@ -127,7 +156,7 @@ function_description = dict(
     You're also given access to the cost_matrix, where element [i,j] is the cost of edge i->j.
     "
     """,
-    ga_mutation =
+    ga_mutation=
     """
     "
     Performs a Mutation operation on the Chromosome.
@@ -138,7 +167,7 @@ function_description = dict(
     You're also given access to the cost_matrix, where element [i,j] is the cost of edge i->j.
     "
     """,
-    ga_combined =
+    ga_combined=
     """
     GA combined: 
     Controls crossover and mutation.
@@ -220,7 +249,7 @@ function_description = dict(
     """,
 )
 seed_function = dict(
-    ga_crossover =
+    ga_crossover=
     """
     def ga_crossover(parent1, parent2, cost_matrix):
         # Unpack parents
@@ -260,7 +289,7 @@ seed_function = dict(
         # Return the offspring
         return (child_order, child_tasks)
     """,
-    ga_mutation =
+    ga_mutation=
     """
     def ga_mutation(chromosome, cost_matrix):
         # Unpack the chromosome
@@ -290,7 +319,7 @@ seed_function = dict(
         # Return the mutated chromosome
         return (order_of_tasks, tasks_per_robot)
     """,
-    ga_combined =
+    ga_combined=
     """
         
     def ga_combined(parent1, parent2, cost_matrix):
@@ -432,7 +461,10 @@ seed_function = dict(
     one_move=
     """
     def one_move(current_solution, cost_matrix):
-        # Deep copy to avoid modifying the original solution
+        # This function should NEVER take a task from an agent with only one task. 
+        # All agents should have at least 1 tasks!
+        # All tasks should be visited by only one agent.
+        # All tasks should be visited only one time.
         # Deep copy to avoid modifying the original solution
         task_order, agent_task_counts = deepcopy(current_solution)
 
@@ -682,10 +714,9 @@ seed_function = dict(
     """,
 )
 problem_description = dict(
-    task_allocation =
+    task_allocation=
     """
     A team of agents must visit all tasks in a set. Traversing between tasks has a cost. 
     This cost is to be minimised. The costs are stored in a cost matrix.
     """
 )
-

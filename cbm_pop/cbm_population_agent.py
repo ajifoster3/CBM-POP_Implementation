@@ -350,7 +350,7 @@ def main(args=None):
         node_name = f"cbm_population_agent_{agent_id}"
         agent = CBMPopulationAgent(
             pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
-            num_tasks=num_tasks, num_tsp_agents=5, num_iterations=1000,
+            num_tasks=num_tasks, num_tsp_agents=20, num_iterations=1000,
             num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
             cost_matrix=problem.cost_matrix, learning_method=learning_method
         )

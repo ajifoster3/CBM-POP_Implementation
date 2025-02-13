@@ -180,7 +180,9 @@ class MainWindow(QMainWindow):
         self.learning_method_dropdown = QComboBox()  # Create dropdown for learning methods
         self.learning_method_dropdown.addItems([
             "Ferreira_et_al.",
-            "Q-Learning"
+            "Q-Learning",
+            "FEA_LLM",
+            "QL_LLM"
         ])
         layout.addWidget(label2)
         layout.addWidget(self.learning_method_dropdown)
@@ -194,7 +196,7 @@ class MainWindow(QMainWindow):
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         label1 = QLabel("Run time:")
-        self.runtime_input.setRange(1, 1000)  # Set range for runtime input (e.g., in seconds)
+        self.runtime_input.setRange(-1, 1000)  # Set range for runtime input (e.g., in seconds)
         layout.addWidget(label1)
         layout.addWidget(self.runtime_input)
 

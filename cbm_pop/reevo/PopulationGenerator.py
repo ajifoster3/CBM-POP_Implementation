@@ -71,7 +71,7 @@ class PopulationGenerator:
             for i in range(population_size):
                 # Create a task that runs fetch_function and tags the result with the key
                 task = asyncio.create_task(
-                    self._fetch_and_tag(key, function_name, task_description, seed_function, operator_index=i + 1)
+                    self._fetch_and_tag(key, function_name, task_description, seed_function, operator_index=i)
                 )
                 all_tasks.append(task)
 

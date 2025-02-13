@@ -27,6 +27,7 @@ setup(
             'cbm_fitness_logger = cbm_pop.fitness_logger:main',
             'cbm_population_agent_llm = cbm_pop.cbm_population_agent_llm:main',
             'llm_interface_agent = cbm_pop.llm_interface_agent:main',
+            'cbm_population_agent_online = cbm_pop.cbm_population_agent_online:main',
         ],
     },
 )
