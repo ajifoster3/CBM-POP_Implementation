@@ -88,7 +88,10 @@ class FitnessLogger(Node):
         self.publisher = self.create_publisher(Bool, self.topic, 10)
 
         # Create a timer that will trigger the kill command after 50 seconds
-        self.timer = self.create_timer(120.0, self.publish_kill_signal)
+        # self.timer = self.create_timer(20.0, self.publish_kill_signal)
+
+        self.initial_robot_poses = [None] * (5)
+        self.robot_poses = [None] * (5)
 
     def publish_kill_signal(self):
         msg = Bool()

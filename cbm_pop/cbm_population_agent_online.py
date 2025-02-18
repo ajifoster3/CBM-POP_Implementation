@@ -42,8 +42,8 @@ class CBMPopulationAgentOnline(Node):
         self.di_cycle_length = di_cycle_length
         self.num_iterations = num_iterations
         self.epsilon = epsilon
-        self.num_tasks = num_tasks
-        self.num_tsp_agents = num_tsp_agents
+        self.num_tasks = 5
+        self.num_tsp_agents = 5
         self.agent_best_solution = None
         self.coalition_best_solution = None
         self.local_best_solution = None
@@ -54,7 +54,8 @@ class CBMPopulationAgentOnline(Node):
         self.weight_matrix = WeightMatrix(self.num_intensifiers, self.num_diversifiers)
         self.previous_experience = []
         self.no_improvement_attempts = num_solution_attempts
-        self.agent_ID = agent_id
+        self.agent_ID = agent_id  # This will change as teamsize changes
+        self.true_agent_ID = self.agent_ID  # This is permanent
         self.received_weight_matrices = []
         self.learning_method = learning_method
 
@@ -68,7 +69,6 @@ class CBMPopulationAgentOnline(Node):
         # Runtime data
         self.initial_robot_poses = [None] * (self.num_tsp_agents)
         self.robot_poses = [None] * (self.num_tsp_agents)
-        self.failed_agents = [False] * (self.num_tsp_agents)
 
         self.current_task = None
         with open("/home/ajifoster3/Downloads/all_geoposes_wind_turbine.json", "r") as file:
@@ -91,7 +91,13 @@ class CBMPopulationAgentOnline(Node):
         self.cost_matrix = self.calculate_cost_matrix()
         self.robot_cost_matrix = [None] * self.num_tasks
         self.current_solution = self.select_solution()
-        self.last_purge_agent = None
+        self.last_purge_agent_true_id = None
+        self.is_agent_tobe_purged = False
+        self.failed_agents = [False] * (self.num_tsp_agents)
+        self.purged_agents = [False] * (self.num_tsp_agents)
+
+        self.ros_timer = None
+        self.agent_timeouts = [False] * (self.num_tsp_agents)
 
         cb_group = ReentrantCallbackGroup()
         self.me_cb_group = MutuallyExclusiveCallbackGroup()
@@ -143,7 +149,6 @@ class CBMPopulationAgentOnline(Node):
 
             self.global_pose_subscribers.append(sub)  # Store subscription to prevent garbage collection
 
-
         # Timer for periodic execution of the run loop
         self.run_goal_publisher_timer = self.create_timer(0.5, self.publish_goal_pose, callback_group=cb_group)
         self.run_cost_matrix_recalculation = self.create_timer(15, self.robot_cost_matrix_recalculation,
@@ -164,6 +169,9 @@ class CBMPopulationAgentOnline(Node):
         )
 
         self.environmental_representation_timer = self.create_timer(5, self.environmental_representation_timer,
+                                                                    callback_group=cb_group)
+
+        self.solution_publisher_timer = self.create_timer(2, self.regular_solution_publish_timer,
                                                                     callback_group=cb_group)
 
         # Q_learning
@@ -203,6 +211,7 @@ class CBMPopulationAgentOnline(Node):
 
     def calculate_robot_cost_matrix(self):
         # Filter out None values from robot_poses
+
         valid_robot_poses = [pose for pose in self.robot_poses if pose is not None]
         num_robots = len(valid_robot_poses)
         num_tasks = len(self.task_poses)
@@ -225,11 +234,10 @@ class CBMPopulationAgentOnline(Node):
                     total_horizontal_distance, total_vertical_distance, 3, 1.45, 11)
 
                 cost_map[i][j] = cost
-
         self.robot_cost_matrix = cost_map
 
-    def kill_robot_callback(self, msg, agent):
-        if agent == self.agent_ID:
+    def kill_robot_callback(self, msg, failed_agent_true_id):
+        if failed_agent_true_id == self.true_agent_ID:
             if msg.data:
                 goal_pose = GeoPoseStamped()
 
@@ -238,32 +246,33 @@ class CBMPopulationAgentOnline(Node):
                 goal_pose.header.frame_id = "world"  # Change frame if needed
 
                 # Set position (Latitude, Longitude, Altitude)
-                goal_pose.pose.position.latitude = self.initial_robot_poses[self.agent_ID-1].position.latitude
-                goal_pose.pose.position.longitude = self.initial_robot_poses[self.agent_ID-1].position.longitude
-                goal_pose.pose.position.altitude = self.initial_robot_poses[
-                    self.agent_ID].position.altitude  # Example altitude
+                goal_pose.pose.position.latitude = self.initial_robot_poses[self.true_agent_ID - 1].position.latitude
+                goal_pose.pose.position.longitude = self.initial_robot_poses[self.true_agent_ID - 1].position.longitude
+                goal_pose.pose.position.altitude = self.initial_robot_poses[self.true_agent_ID].position.altitude  # Example altitude
 
                 # Set orientation (Quaternion)
-                goal_pose.pose.orientation.x = self.initial_robot_poses[self.agent_ID-1].orientation.x
-                goal_pose.pose.orientation.y = self.initial_robot_poses[self.agent_ID-1].orientation.y
-                goal_pose.pose.orientation.z = self.initial_robot_poses[self.agent_ID-1].orientation.z
-                goal_pose.pose.orientation.w = self.initial_robot_poses[self.agent_ID-1].orientation.w
+                goal_pose.pose.orientation.x = self.initial_robot_poses[self.true_agent_ID - 1].orientation.x
+                goal_pose.pose.orientation.y = self.initial_robot_poses[self.true_agent_ID - 1].orientation.y
+                goal_pose.pose.orientation.z = self.initial_robot_poses[self.true_agent_ID - 1].orientation.z
+                goal_pose.pose.orientation.w = self.initial_robot_poses[self.true_agent_ID - 1].orientation.w
                 self.goal_pose_publisher.publish(goal_pose)
                 print("Shutting down node...")
                 self.destroy_node()
                 rclpy.shutdown()
         else:
-            self.last_purge_agent = agent
-            if self.agent_ID > agent:
+            self.is_agent_tobe_purged = True
+            self.last_purge_agent_true_id = failed_agent_true_id
+            self.failed_agents[failed_agent_true_id - 1] = True
+            if self.true_agent_ID > failed_agent_true_id:
                 self.agent_ID = self.agent_ID - 1
-            self.failed_agents[agent-1] = True
 
-    def purge_agent(self, agent):
+    def purge_agent(self, purge_agent_true_id):
         """
         Removes the specified agent (1-indexed) from all solutions, reassigning their tasks
         to the previous agent (or the last agent if it's agent 1).
         """
-        agent_idx = agent - 1  # Convert to 0-indexed for allocations
+        print("Purging")
+        agent_idx = purge_agent_true_id - 1  # Convert to 0-indexed for allocations
         num_agents = len(self.population[0][1]) if self.population else 0
 
         # Function to update a given solution
@@ -494,13 +503,19 @@ class CBMPopulationAgentOnline(Node):
                 return  # Ignore this solution if it has more elements
 
             if len(msg.allocations) < len(self.coalition_best_solution[1]):
-                self.set_coalition_best_solution(solution)
-                self.coalition_best_agent = msg.id
+                return
+
+            their_solution_fitness = Fitness.fitness_function_robot_pose(solution, self.cost_matrix,
+                                                   [self.robot_cost_matrix[i] for i, purged in
+                                                    enumerate(self.purged_agents) if not purged])
+
+            our_solution_fitness = Fitness.fitness_function_robot_pose(self.coalition_best_solution, self.cost_matrix,
+                                                        [self.robot_cost_matrix[i] for i, purged in
+                                                         enumerate(self.purged_agents) if not purged])
 
             # Evaluate fitness only if the number of allocations is valid
-            if Fitness.fitness_function_robot_pose(solution, self.cost_matrix, self.robot_cost_matrix) < \
-                    Fitness.fitness_function_robot_pose(self.coalition_best_solution, self.cost_matrix,
-                                                        self.robot_cost_matrix):
+            if their_solution_fitness < our_solution_fitness:
+                print("Recieved a new best solution.")
                 self.set_coalition_best_solution(solution)
                 self.coalition_best_agent = msg.id
 
@@ -512,7 +527,7 @@ class CBMPopulationAgentOnline(Node):
 
         task = deepcopy(self.current_task)
 
-        self.robot_poses[(agent - 1)] = msg.pose
+        self.robot_poses[agent - 1] = deepcopy(msg.pose)
         if all(pose is not None for pose in self.robot_poses) and self.is_loop_started is False:
             self.calculate_robot_cost_matrix()
             self.run_timer = self.create_timer(0.1, self.run_step, callback_group=self.me_cb_group)
@@ -528,13 +543,12 @@ class CBMPopulationAgentOnline(Node):
             goal_lon = self.task_poses[task]["longitude"]
             goal_alt = self.task_poses[task]["altitude"]
 
-            if agent == self.agent_ID and self.haversine(global_lat, global_lon, global_alt, goal_lat, goal_lon,
-                                                         goal_alt) < 0.4:
+            if agent == self.true_agent_ID and self.haversine(global_lat, global_lon, global_alt, goal_lat, goal_lon,
+                                                              goal_alt) < 0.4:
                 print(f"Agent {self.agent_ID} covered position {task}.")
 
                 self.task_covered = task
                 self.is_new_task_covered = True
-
 
     def handle_covered_task(self, current_task):
         self.is_covered[current_task] = True
@@ -605,7 +619,7 @@ class CBMPopulationAgentOnline(Node):
             goal_pose.pose.orientation.w = self.task_poses[self.current_task]["orientation_w"]
             self.goal_pose_publisher.publish(goal_pose)
         else:
-            if self.initial_robot_poses[self.agent_ID-1] is not None:
+            if self.initial_robot_poses[self.agent_ID - 1] is not None:
                 goal_pose = GeoPoseStamped()
 
                 # Set header
@@ -613,15 +627,16 @@ class CBMPopulationAgentOnline(Node):
                 goal_pose.header.frame_id = "world"  # Change frame if needed
 
                 # Set position (Latitude, Longitude, Altitude)
-                goal_pose.pose.position.latitude = self.initial_robot_poses[self.agent_ID-1].position.latitude
-                goal_pose.pose.position.longitude = self.initial_robot_poses[self.agent_ID-1].position.longitude
-                goal_pose.pose.position.altitude = self.initial_robot_poses[self.agent_ID-1].position.altitude  # Example altitude
+                goal_pose.pose.position.latitude = self.initial_robot_poses[self.agent_ID - 1].position.latitude
+                goal_pose.pose.position.longitude = self.initial_robot_poses[self.agent_ID - 1].position.longitude
+                goal_pose.pose.position.altitude = self.initial_robot_poses[
+                    self.agent_ID - 1].position.altitude  # Example altitude
 
                 # Set orientation (Quaternion)
-                goal_pose.pose.orientation.x = self.initial_robot_poses[self.agent_ID-1].orientation.x
-                goal_pose.pose.orientation.y = self.initial_robot_poses[self.agent_ID-1].orientation.y
-                goal_pose.pose.orientation.z = self.initial_robot_poses[self.agent_ID-1].orientation.z
-                goal_pose.pose.orientation.w = self.initial_robot_poses[self.agent_ID-1].orientation.w
+                goal_pose.pose.orientation.x = self.initial_robot_poses[self.agent_ID - 1].orientation.x
+                goal_pose.pose.orientation.y = self.initial_robot_poses[self.agent_ID - 1].orientation.y
+                goal_pose.pose.orientation.z = self.initial_robot_poses[self.agent_ID - 1].orientation.z
+                goal_pose.pose.orientation.w = self.initial_robot_poses[self.agent_ID - 1].orientation.w
                 self.goal_pose_publisher.publish(goal_pose)
 
     @staticmethod
@@ -657,6 +672,14 @@ class CBMPopulationAgentOnline(Node):
         if all(pose is not None for pose in self.robot_poses):
             self.calculate_robot_cost_matrix()
 
+    def regular_solution_publish_timer(self):
+        if self.coalition_best_solution is not None:
+            solution = Solution()
+            solution.id = self.agent_ID
+            solution.order = self.coalition_best_solution[0]
+            solution.allocations = self.coalition_best_solution[1]
+            self.solution_publisher.publish(solution)
+
     def run_step(self):
         """
         A single step of the `run` method, executed periodically by the ROS2 timer.
@@ -667,12 +690,18 @@ class CBMPopulationAgentOnline(Node):
             self.task_covered = -1
             self.is_new_task_covered = False
 
+
+
         if self.current_solution is not None:
 
-            num_false = self.failed_agents.count(False)
 
-            if len(self.current_solution[1]) > num_false:
-                self.purge_agent(self.last_purge_agent)
+            if self.is_agent_tobe_purged and not self.purged_agents[self.last_purge_agent_true_id] and len(
+                    self.current_solution[1]) > self.failed_agents.count(False):
+                print("Purging agent")
+                self.purge_agent(self.last_purge_agent_true_id)
+                self.purged_agents[self.last_purge_agent_true_id] = True
+
+            num_false = self.failed_agents.count(False)
 
             if self.stopping_criterion(self.iteration_count):
                 self.get_logger().info("Stopping criterion met. Shutting down.")
@@ -686,79 +715,96 @@ class CBMPopulationAgentOnline(Node):
                 self.no_improvement_attempt_count = 0
 
             operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition)
-            c_new = OperatorFunctions.apply_op(
-                operator,
-                self.current_solution,
-                self.population,
-                self.cost_matrix,
-                self.robot_cost_matrix
-            )
-            gain = Fitness.fitness_function_robot_pose(c_new, self.cost_matrix, self.robot_cost_matrix) - \
-                   Fitness.fitness_function_robot_pose(self.current_solution, self.cost_matrix, self.robot_cost_matrix)
-            self.update_experience(condition, operator, gain)
+            c_new = None
+            try:
+                c_new = OperatorFunctions.apply_op(
+                    operator,
+                    self.current_solution,
+                    self.population,
+                    self.cost_matrix,
+                    [self.robot_cost_matrix[i] for i, purged in enumerate(self.purged_agents) if not purged]
+                )
+            except Exception as e:
+                print(f"Issue with applying operator: {e}")
+            if c_new:
+                gain = Fitness.fitness_function_robot_pose(c_new, self.cost_matrix,
+                                                           [self.robot_cost_matrix[i] for i, purged in
+                                                            enumerate(self.purged_agents) if not purged]) - \
+                       Fitness.fitness_function_robot_pose(self.current_solution, self.cost_matrix,
+                                                           [self.robot_cost_matrix[i] for i, purged in
+                                                            enumerate(self.purged_agents) if not purged])
+                self.update_experience(condition, operator, gain)
 
-            if self.local_best_solution is None or \
-                    Fitness.fitness_function_robot_pose(c_new, self.cost_matrix,
-                                                        self.robot_cost_matrix) < Fitness.fitness_function_robot_pose(
-                self.local_best_solution, self.cost_matrix, self.robot_cost_matrix):
-                self.local_best_solution = deepcopy(c_new)
-                self.best_local_improved = True
-                self.no_improvement_attempt_count = 0
+                if self.local_best_solution is None or \
+                        Fitness.fitness_function_robot_pose(c_new, self.cost_matrix,
+                                                            [self.robot_cost_matrix[i] for i, purged in
+                                                             enumerate(self.purged_agents) if
+                                                             not purged]) < Fitness.fitness_function_robot_pose(
+                    self.local_best_solution, self.cost_matrix,
+                    [self.robot_cost_matrix[i] for i, purged in enumerate(self.purged_agents) if not purged]):
+                    self.local_best_solution = deepcopy(c_new)
+                    self.best_local_improved = True
+                    self.no_improvement_attempt_count = 0
+                else:
+                    self.no_improvement_attempt_count += 1
+
+                if self.coalition_best_solution is None or \
+                        Fitness.fitness_function_robot_pose(c_new, self.cost_matrix,
+                                                            [self.robot_cost_matrix[i] for i, purged in
+                                                             enumerate(self.purged_agents) if
+                                                             not purged]) < Fitness.fitness_function_robot_pose(
+                    self.coalition_best_solution, self.cost_matrix,
+                    [self.robot_cost_matrix[i] for i, purged in enumerate(self.purged_agents) if not purged]):
+                    self.set_coalition_best_solution(deepcopy(c_new))
+                    self.coalition_best_agent = self.agent_ID
+                    self.best_coalition_improved = True
+                    solution = Solution()
+                    solution.id = self.agent_ID
+                    solution.order = self.coalition_best_solution[0]
+                    solution.allocations = self.coalition_best_solution[1]
+                    self.solution_publisher.publish(solution)
+
+                self.current_solution = c_new
+                self.di_cycle_count += 1
+
+                if self.end_of_di_cycle(self.di_cycle_count):
+                    if self.best_local_improved:
+                        learning_method_switch = {
+                            LearningMethod.FERREIRA: self.individual_learning_old,
+                            LearningMethod.Q_LEARNING: self.individual_learning
+                        }
+
+                        # Call the appropriate function based on the current learning method
+                        learning_function = learning_method_switch.get(LearningMethod(self.learning_method))
+                        if learning_function:
+                            self.weight_matrix.weights = learning_function()
+                        else:
+                            self.get_logger().error(f"Unknown learning method: {self.learning_method}")
+
+                        self.best_local_improved = False
+
+                    if self.best_coalition_improved:
+                        self.best_coalition_improved = False
+
+                        msg = Weights()
+                        msg_dict = self.weight_matrix.pack_weights(self.agent_ID)
+                        msg.id = msg_dict["id"]
+                        msg.rows = msg_dict["rows"]
+                        msg.cols = msg_dict["cols"]
+                        msg.weights = msg_dict["weights"]
+
+                        self.weight_publisher.publish(msg)
+
+                    if self.received_weight_matrices:
+                        self.mimetism_learning(self.received_weight_matrices, self.rho)
+                        self.received_weight_matrices = []
+
+                    self.previous_experience = []
+                    self.di_cycle_count = 0
+
+                self.iteration_count += 1
             else:
-                self.no_improvement_attempt_count += 1
-
-            if self.coalition_best_solution is None or \
-                    Fitness.fitness_function_robot_pose(c_new, self.cost_matrix,
-                                                        self.robot_cost_matrix) < Fitness.fitness_function_robot_pose(
-                self.coalition_best_solution, self.cost_matrix, self.robot_cost_matrix):
-                self.set_coalition_best_solution(deepcopy(c_new))
-                self.coalition_best_agent = self.agent_ID
-                self.best_coalition_improved = True
-                solution = Solution()
-                solution.id = self.agent_ID
-                solution.order = self.coalition_best_solution[0]
-                solution.allocations = self.coalition_best_solution[1]
-                self.solution_publisher.publish(solution)
-
-            self.current_solution = c_new
-            self.di_cycle_count += 1
-
-            if self.end_of_di_cycle(self.di_cycle_count):
-                if self.best_local_improved:
-                    learning_method_switch = {
-                        LearningMethod.FERREIRA: self.individual_learning_old,
-                        LearningMethod.Q_LEARNING: self.individual_learning
-                    }
-
-                    # Call the appropriate function based on the current learning method
-                    learning_function = learning_method_switch.get(LearningMethod(self.learning_method))
-                    if learning_function:
-                        self.weight_matrix.weights = learning_function()
-                    else:
-                        self.get_logger().error(f"Unknown learning method: {self.learning_method}")
-
-                    self.best_local_improved = False
-
-                if self.best_coalition_improved:
-                    self.best_coalition_improved = False
-
-                    msg = Weights()
-                    msg_dict = self.weight_matrix.pack_weights(self.agent_ID)
-                    msg.id = msg_dict["id"]
-                    msg.rows = msg_dict["rows"]
-                    msg.cols = msg_dict["cols"]
-                    msg.weights = msg_dict["weights"]
-
-                    self.weight_publisher.publish(msg)
-
-                if self.received_weight_matrices:
-                    self.mimetism_learning(self.received_weight_matrices, self.rho)
-                    self.received_weight_matrices = []
-
-                self.previous_experience = []
-                self.di_cycle_count = 0
-
-            self.iteration_count += 1
+                print("Something went wrong with applying the operator and resulted in a None.")
 
 
 def generate_problem(num_tasks):
@@ -796,7 +842,7 @@ def main(args=None):
 
         problem = Problem()
         problem.load_cost_matrix(problem_filename, "csv")
-        num_tasks = len(problem.cost_matrix)
+        num_tasks = 2
 
         node_name = f"cbm_population_agent_{agent_id}"
         agent = CBMPopulationAgentOnline(
@@ -873,6 +919,7 @@ def main(args=None):
 
     if runtime != -1:
         # Create a timer for shutdown
+        print("Hit shutdown_callback")
         agent.create_timer(runtime, shutdown_callback)
 
     # asyncio.run(agent.generate_population())

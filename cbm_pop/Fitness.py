@@ -1,3 +1,5 @@
+import sys
+
 
 class Fitness:
 
@@ -39,26 +41,31 @@ class Fitness:
         :param robot_cost_matrix: Cost matrix from robot positions to tasks
         :return: The maximum path cost among all agents
         """
-        # Extract the task order from the solution
-        task_order, agent_task_counts = solution
 
-        # Track the maximum cost of any agent's path
-        max_cost = 0
+        try:
+            # Extract the task order from the solution
+            task_order, agent_task_counts = solution
 
-        # Sum up the costs for the assigned tasks in the task order
-        counter = 0
-        for agent_idx, task_count in enumerate(agent_task_counts):
-            if task_count > 0:
-                agent_cost = robot_cost_matrix[agent_idx][task_order[counter]]  # Cost from robot to first task
+            # Track the maximum cost of any agent's path
+            max_cost = 0
 
-                for i in range(counter, counter + task_count - 1):
-                    task_i = task_order[i]
-                    task_j = task_order[i + 1]
-                    agent_cost += cost_matrix[task_i][task_j]
+            # Sum up the costs for the assigned tasks in the task order
+            counter = 0
+            for agent_idx, task_count in enumerate(agent_task_counts):
+                if task_count > 0:
+                    agent_cost = robot_cost_matrix[agent_idx][task_order[counter]]  # Cost from robot to first task
 
-                # Update the max cost encountered
-                max_cost = max(max_cost, agent_cost)
+                    for i in range(counter, counter + task_count - 1):
+                        task_i = task_order[i]
+                        task_j = task_order[i + 1]
+                        agent_cost += cost_matrix[task_i][task_j]
 
-            counter += task_count
+                    # Update the max cost encountered
+                    max_cost = max(max_cost, agent_cost)
 
-        return max_cost
+                counter += task_count
+
+            return max_cost
+        except Exception as e:
+            print(f"Exeception on calculating fitness: {e}. agent task counts: {agent_task_counts}")
+            return 99999999
