@@ -8,27 +8,27 @@ from cbm_pop.Operator import Operator
 class OperatorFunctions:
     # Define operator function map with static method references
     operator_function_map = {
-        Operator.TWO_SWAP: lambda current_solution, cost_matrix, robot_cost_matrix: OperatorFunctions.two_swap(
+        Operator.TWO_SWAP: lambda current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.two_swap(
             current_solution,
             cost_matrix,
-            robot_cost_matrix),
-        Operator.ONE_MOVE: lambda current_solution, cost_matrix, robot_cost_matrix: OperatorFunctions.one_move(
+            robot_cost_matrix, inital_robot_cost_matrix),
+        Operator.ONE_MOVE: lambda current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.one_move(
             current_solution,
             cost_matrix,
-            robot_cost_matrix),
+            robot_cost_matrix, inital_robot_cost_matrix),
         Operator.BEST_COST_ROUTE_CROSSOVER: lambda current_solution,
                                                    population,
                                                    cost_matrix,
-                                                   robot_cost_matrix: OperatorFunctions.best_cost_route_crossover(
-            current_solution, population, cost_matrix, robot_cost_matrix),
+                                                   robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.best_cost_route_crossover(
+            current_solution, population, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix),
         Operator.INTRA_DEPOT_REMOVAL: lambda current_solution: OperatorFunctions.intra_depot_removal(current_solution),
         Operator.INTRA_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.intra_depot_swapping(
             current_solution),
         # Operator.INTER_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.inter_depot_swapping(
         #    current_solution),
         Operator.SINGLE_ACTION_REROUTING: lambda current_solution, cost_matrix,
-                                                 robot_cost_matrix: OperatorFunctions.single_action_rerouting(
-            current_solution, cost_matrix, robot_cost_matrix),
+                                                 robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.single_action_rerouting(
+            current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix),
     }
 
     @staticmethod
@@ -49,7 +49,8 @@ class OperatorFunctions:
         return chosen_operator
 
     @staticmethod
-    def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None):
+    def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None,
+                 inital_robot_cost_matrix=None):
         """
         Apply the operator to the current solution and return the newly generated child solution.
         :param cost_matrix: Cost matrix to calculate the cost
@@ -64,12 +65,12 @@ class OperatorFunctions:
             # Call the function and pass arguments as needed
             if operator == Operator.BEST_COST_ROUTE_CROSSOVER:
                 return OperatorFunctions.operator_function_map[operator](current_solution, population, cost_matrix,
-                                                                         robot_cost_matrix)
+                                                                         robot_cost_matrix, inital_robot_cost_matrix)
             elif (operator == Operator.SINGLE_ACTION_REROUTING
                   or operator == Operator.TWO_SWAP
                   or operator == Operator.ONE_MOVE):
                 return OperatorFunctions.operator_function_map[operator](current_solution, cost_matrix,
-                                                                         robot_cost_matrix)
+                                                                         robot_cost_matrix, inital_robot_cost_matrix)
             else:
                 return OperatorFunctions.operator_function_map[operator](current_solution)
 
@@ -78,7 +79,7 @@ class OperatorFunctions:
 
     # Diversifiers
     @staticmethod
-    def best_cost_route_crossover(current_solution, population, cost_matrix, robot_cost_matrix):
+    def best_cost_route_crossover(current_solution, population, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
         "For two parent chromosomes, select a route to be removed
         from each. The removed nodes are inserted into the
@@ -93,7 +94,7 @@ class OperatorFunctions:
         # Find the fittest solution in P that is not current_solution
         fittest_non_current_solution = min(
             (sol for sol in population if sol != current_solution),
-            key=lambda sol: Fitness.fitness_function_robot_pose(sol, cost_matrix, robot_cost_matrix)
+            key=lambda sol: Fitness.fitness_function_robot_pose(sol, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix)
         )
 
         # Randomly select a path (route) from fittest_non_current_solution
@@ -125,14 +126,14 @@ class OperatorFunctions:
 
         for task in selected_path[:]:  # Use a copy of selected_path to iterate safely
             OperatorFunctions.find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
-                                                      task, robot_cost_matrix)
+                                                      task, robot_cost_matrix, inital_robot_cost_matrix)
 
         # Return the modified solution as the child solution
         return new_solution_task_order, new_solution_task_counts  # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
 
     @staticmethod
     def find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task,
-                                robot_cost_matrix):
+                                robot_cost_matrix, inital_robot_cost_matrix):
         best_fitness = float('inf')
         best_position = 0
         best_agent = 0
@@ -153,7 +154,7 @@ class OperatorFunctions:
 
                 # Calculate fitness with this temporary insertion
                 temp_fitness = Fitness.fitness_function_robot_pose((temp_order, temp_counts), cost_matrix,
-                                                                   robot_cost_matrix)
+                                                                   robot_cost_matrix, inital_robot_cost_matrix)
 
                 # If the new fitness is better, update the best fitness, position, and agent
                 if temp_fitness < best_fitness:
@@ -249,7 +250,7 @@ class OperatorFunctions:
         return current_solution
 
     @staticmethod
-    def single_action_rerouting(current_solution, cost_matrix, robot_cost_matrix):
+    def single_action_rerouting(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
         "Re-routing involves randomly selecting one action and removing
         it from the existing route. The action is then inserted at the
@@ -278,7 +279,7 @@ class OperatorFunctions:
         agent_task_counts[agent_index] -= 1
 
         OperatorFunctions.find_best_task_position(cost_matrix, agent_task_counts, task_order,
-                                                  task, robot_cost_matrix)
+                                                  task, robot_cost_matrix, inital_robot_cost_matrix)
         return task_order, agent_task_counts
 
     # Intensifiers
@@ -289,7 +290,7 @@ class OperatorFunctions:
     # Maybe we don't need single action rerouting either.
 
     @staticmethod
-    def one_move(current_solution, cost_matrix, robot_cost_matrix):
+    def one_move(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
         "Removal of a node from the solution and insertion at the point
         that maximizes solution fitness"
@@ -342,7 +343,7 @@ class OperatorFunctions:
                     # Calculate fitness
                     temp_fitness = Fitness.fitness_function_robot_pose(
                         (temp_order_with_insertion, temp_counts_with_insertion),
-                        cost_matrix, robot_cost_matrix)
+                        cost_matrix, robot_cost_matrix, inital_robot_cost_matrix)
 
                     # Check if this move yields a better fitness
                     if temp_fitness < best_fitness:
@@ -367,7 +368,7 @@ class OperatorFunctions:
         return task_order, agent_task_counts
 
     @staticmethod
-    def two_swap(current_solution, cost_matrix, robot_cost_matrix):
+    def two_swap(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
         "Swapping two pairs of subsequent tasks (each pair as a unit) from two different agents
         to improve solution fitness by minimizing traversal cost."
@@ -419,7 +420,7 @@ class OperatorFunctions:
 
                         # Calculate the fitness after the swap
                         temp_fitness = Fitness.fitness_function_robot_pose((temp_order, agent_task_counts), cost_matrix,
-                                                                           robot_cost_matrix)
+                                                                           robot_cost_matrix, inital_robot_cost_matrix)
 
                         # Track the best swap if it improves fitness
                         if temp_fitness < best_fitness:
