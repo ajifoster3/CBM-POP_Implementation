@@ -472,25 +472,31 @@ class CBMPopulationAgentOnline(Node):
     def individual_learning(self):
         """
         Updates the weight matrix (Q(s, a)) using the Q-learning formula.
+        Only updates the weights for experiences before the lowest relative fitness solution.
         :return: Updated weight matrix
         """
+        # Compute cumulative gains
+        cumulative_gains = []
+        total_gain = 0
         for experience in self.previous_experience:
-            condition, operator, gain = experience
+            _, _, gain = experience
+            total_gain += gain
+            cumulative_gains.append(total_gain)
+
+        # Find the index of the lowest relative fitness solution (min cumulative gain)
+        min_fitness_index = cumulative_gains.index(min(cumulative_gains))
+
+        # Update weights only for experiences before this index
+        for i in range(min_fitness_index):
+            condition, operator, gain = self.previous_experience[i]
 
             # Current Q value
             current_q = self.weight_matrix.weights[condition.value][operator.value - 1]
 
-            # Estimate future rewards (no explicit next_state, assume single-step Q-learning)
-            max_next_q = max(
-                self.weight_matrix.weights[condition.value])  # Max Q for current state (proxy for next state)
+            # Estimate future rewards (single-step Q-learning)
+            max_next_q = max(self.weight_matrix.weights[condition.value])
 
-            # Q-learning update formula
-            if gain > 0:
-                self.reward = -0.5
-            elif gain == 0:
-                self.reward = 0
-            else:
-                self.reward = 1
+            self.reward = 1
 
             updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
 
@@ -935,8 +941,8 @@ def main(args=None):
     node_name = f"cbm_population_agent_{agent_id}"
     agent = CBMPopulationAgentOnline(
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
-        num_tasks=num_tasks, num_tsp_agents=5, num_iterations=9999999,
-        num_solution_attempts=20, agent_id=agent_id, node_name=node_name,
+        num_tasks=num_tasks, num_tsp_agents=10, num_iterations=9999999,
+        num_solution_attempts=21, agent_id=agent_id, node_name=node_name,
         cost_matrix=problem.cost_matrix, learning_method=learning_method
     )
     print("CBMPopulationAgentOnline has been initialized.")
