@@ -1,4 +1,5 @@
 import sys
+import traceback
 
 
 class Fitness:
@@ -52,6 +53,7 @@ class Fitness:
             counter = 0
             for agent_idx, task_count in enumerate(agent_task_counts):
                 if task_count > 0:
+
                     agent_cost = robot_cost_matrix[agent_idx][task_order[counter]]  # Cost from robot to first task
 
                     for i in range(counter, counter + task_count - 1):
@@ -72,5 +74,14 @@ class Fitness:
 
             return weighted_cost
         except Exception as e:
-            print(f"Exception on calculating fitness: {e}. agent task counts: {robot_cost_matrix}")
+            # error_message = (
+            #     f"[ERROR] Exception in fitness_function_robot_pose:\n"
+            #     f"    Error Type: {type(e).__name__}\n"
+            #     f"    Error Message: {e}\n"
+            #     f"    Exception Traceback:\n{traceback.format_exc()}\n"
+            #     f"    Full Stack Trace:\n{''.join(traceback.format_stack())}")
+            #
+            # print(error_message)
+            # print(f"Solution {solution}")
+            # print(f"robot_cost_matrix {robot_cost_matrix}")
             return 99999999

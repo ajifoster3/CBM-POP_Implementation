@@ -88,6 +88,9 @@ for RUN in {1..5}; do
     ros2 run "$PACKAGE_NAME" cbm_fitness_logger --ros-args -p timeout:=$TRACKING_TIMEOUT &
     PIDS+=($!)
 
+    # Launch cbm_fitness_logger as a foreground process
+    ros2 run "$PACKAGE_NAME" kill_robot_at_time
+
     echo "Launched $INSTANCE_COUNT agent(s) using learning_method=$USER_LEARNING_METHOD and fitness_logger."
     echo "Waiting for all ROS processes to finish..."
 

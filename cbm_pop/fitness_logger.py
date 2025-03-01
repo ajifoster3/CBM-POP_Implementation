@@ -31,15 +31,16 @@ class FitnessLogger(Node):
 
         self.timeout = 10
         self.last_env_update_time = None  # Track last received EnvironmentalRepresentation time
-        self.termination_timeout = 10.0
+        self.termination_timeout = 20.0
 
         self.geoid = GeoidPGM('/home/ajifoster3/Documents/Software/ros2_ws/src/CBM-POP_Implementation/egm96-5.pgm')
         self.declare_parameter('timeout', 0.0)
         self.timeout = self.get_parameter('timeout').get_parameter_value().double_value
 
         self.num_tsp_agents = 5
-
-        with open("/home/ajifoster3/Downloads/all_geoposes_wind_turbine.json", "r") as file:
+        filename = "/home/ajifoster3/Downloads/Poses/random120/3.json"
+        with open(filename, "r") as file:
+            print(f"using {filename}")
             data = json.load(file)
         self.task_poses = [
             {
@@ -102,9 +103,6 @@ class FitnessLogger(Node):
         # Create a publisher for the kill command
         self.publisher = self.create_publisher(Bool, self.topic, 10)
 
-        # Create a timer that will trigger the kill command after 50 seconds
-        kill_time = random.randint(300, 900)
-        self.timer = self.create_timer(float(kill_time), self.publish_kill_signal)
 
         # Runtime data
         self.initial_robot_poses = [None] * (self.num_tsp_agents)

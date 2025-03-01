@@ -13,7 +13,7 @@ def vert_accel_func(time, velocity, remaining_distance):
 def descend_accel_func(time, velocity, remaining_distance):
     return min(0.2 * (1.3 * remaining_distance) ** 4, 4.0)
 
-def calculate_drone_distance(vertical_distance, horizontal_distance, ascending_speed, descending_speed,
+def calculate_drone_distance(horizontal_distance, vertical_distance, ascending_speed, descending_speed,
                              horizontal_speed):
     """
     Calculate the total drone travel distance considering vertical and horizontal movement.
