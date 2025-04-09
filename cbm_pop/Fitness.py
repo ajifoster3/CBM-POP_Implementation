@@ -74,14 +74,66 @@ class Fitness:
 
             return weighted_cost
         except Exception as e:
-            # error_message = (
-            #     f"[ERROR] Exception in fitness_function_robot_pose:\n"
-            #     f"    Error Type: {type(e).__name__}\n"
-            #     f"    Error Message: {e}\n"
-            #     f"    Exception Traceback:\n{traceback.format_exc()}\n"
-            #     f"    Full Stack Trace:\n{''.join(traceback.format_stack())}")
-            #
-            # print(error_message)
-            # print(f"Solution {solution}")
-            # print(f"robot_cost_matrix {robot_cost_matrix}")
+            error_message = (
+                f"[ERROR] Exception in fitness_function_robot_pose:\n"
+                f"    Error Type: {type(e).__name__}\n"
+                f"    Error Message: {e}\n"
+                f"    Exception Traceback:\n{traceback.format_exc()}\n"
+                f"    Full Stack Trace:\n{''.join(traceback.format_stack())}")
+
+            print(error_message)
+            print(f"Solution {solution}")
+            print(f"robot_cost_matrix {robot_cost_matrix}")
             return 99999999
+
+    @staticmethod
+    def fitness_function_patrolling_predicted(solution, cost_matrix, robot_cost_matrix, initial_robot_cost_matrix):
+        """
+        Predicts the revisit interval for each task by computing the loop time of each agent's assigned route.
+        Assumes each agent repeats its assigned sequence cyclically.
+
+        :param solution: (task_order, agent_task_counts)
+        :param cost_matrix: NxN task-to-task distances
+        :param robot_cost_matrix: MxN robot-to-task distances
+        :param initial_robot_cost_matrix: MxN task-to-initial-position distances
+        :return: Max predicted revisit time across all tasks
+        """
+        try:
+            task_order, agent_task_counts = solution
+            revisit_intervals = []
+            counter = 0
+
+            for agent_idx, task_count in enumerate(agent_task_counts):
+                if task_count == 0:
+                    continue
+
+                # Initial cost to first task
+                cost = robot_cost_matrix[agent_idx][task_order[counter]]
+
+                # Travel between tasks
+                for i in range(counter, counter + task_count - 1):
+                    task_i = task_order[i]
+                    task_j = task_order[i + 1]
+                    cost += cost_matrix[task_i][task_j]
+
+                # Return to first task to close the loop
+                cost += cost_matrix[task_order[counter + task_count - 1]][task_order[counter]]
+
+                revisit_intervals.extend([cost] * task_count)
+
+                counter += task_count
+
+            if not revisit_intervals:
+                return float('inf')
+
+            return max(revisit_intervals)  # Minimize the worst-case task revisit interval
+
+        except Exception as e:
+            error_message = (
+                f"[ERROR] Exception in fitness_function_patrolling_predicted:\n"
+                f"    Error Type: {type(e).__name__}\n"
+                f"    Error Message: {e}\n"
+                f"    Traceback:\n{traceback.format_exc()}"
+            )
+            print(error_message)
+            return float('inf')

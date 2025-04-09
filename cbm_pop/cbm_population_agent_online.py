@@ -22,11 +22,10 @@ import threading
 from cbm_pop.path_cost_calculator import calculate_drone_distance
 from cbm_pop_interfaces.msg import Solution, Weights, EnvironmentalRepresentation
 from enum import Enum
-from geographic_msgs.msg import GeoPoseStamped
 from math import radians, cos, sin, asin, sqrt
 from pygeodesy.geoids import GeoidPGM
 from std_msgs.msg import Bool
-
+from geographic_msgs.msg import GeoPose, GeoPoseStamped
 
 class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
@@ -66,7 +65,7 @@ class CBMPopulationAgentOnline(Node):
         self.di_cycle_length = di_cycle_length
         self.num_iterations = num_iterations
         self.epsilon = epsilon
-        self.num_tsp_agents = 5
+        self.num_tsp_agents = 25
         self.agent_best_solution = None
         self.coalition_best_solution = None
         self.local_best_solution = None
@@ -93,8 +92,8 @@ class CBMPopulationAgentOnline(Node):
         self.best_local_improved = False
 
         # Runtime data
-        self.initial_robot_poses = [None] * (self.num_tsp_agents)
-        self.robot_poses = [None] * (self.num_tsp_agents)
+        self.initial_robot_poses = [None] * self.num_tsp_agents
+        self.robot_poses = [None] * self.num_tsp_agents
         self.current_solution = None
         self.is_covered = [False] * self.num_tasks
         self.cost_matrix = self.calculate_cost_matrix()
@@ -102,12 +101,12 @@ class CBMPopulationAgentOnline(Node):
         self.robot_inital_pose_cost_matrix = [None] * self.num_tsp_agents
         self.last_purge_agent_true_id = None
         self.is_agent_tobe_purged = False
-        self.failed_agents = [False] * (self.num_tsp_agents)
-        self.purged_agents = [False] * (self.num_tsp_agents)
+        self.failed_agents = [False] * self.num_tsp_agents
+        self.purged_agents = [False] * self.num_tsp_agents
         self.agent_to_revive = None
         self.am_i_failed = False
         self.ros_timer = None
-        self.agent_timeouts = [False] * (self.num_tsp_agents)
+        self.agent_timeouts = [False] * self.num_tsp_agents
 
         self.cb_group = ReentrantCallbackGroup()
         self.me_cb_group = MutuallyExclusiveCallbackGroup()
@@ -231,7 +230,6 @@ class CBMPopulationAgentOnline(Node):
 
     def calculate_robot_cost_matrix(self):
         # Filter out None values from robot_poses
-
         valid_robot_poses = [pose for pose in self.robot_poses if pose is not None]
         num_robots = len(valid_robot_poses)
         num_tasks = len(self.task_poses)
@@ -343,9 +341,7 @@ class CBMPopulationAgentOnline(Node):
 
             # Compute the start and end index of tasks for the purged agent
             counter = 0
-            print(f"{allocations}")
             for i in range(agent_idx):
-                print(f"{allocations[i]}")
                 counter += allocations[i]
             start_idx = counter
             end_idx = start_idx + allocations[agent_idx]
@@ -453,46 +449,56 @@ class CBMPopulationAgentOnline(Node):
         self.new_robot_cost_matrix = self.calculate_robot_cost_matrix()
         self.is_new_robot_cost_matrix = True
 
-    import numpy as np
-
     def generate_population(self):
-        """
-        Generates an initial population using a nearest-neighbor heuristic.
-        Tasks are assigned dynamically based on the closest available robot's updated position.
-        """
         population = []
-        for _ in range(self.pop_size):
-            # Step 1: Create a list of task indexes (unsorted)
-            tasks = list(range(self.num_tasks))
+        print("Generating Population (Balanced)...")
 
-            # Step 2: Initialize agent assignments
+        alpha = 10.0  # penalty weight for the agent's current load
+
+        for i in range(self.pop_size):
+            print(f"Generating solution {i}")
+
+            # Shuffle tasks each time to reduce deterministic bias
+            tasks = list(range(self.num_tasks))
+            random.shuffle(tasks)
+
             agent_assignments = [[] for _ in range(self.num_tsp_agents)]
-            task_allocation_counts = [0] * self.num_tsp_agents  # Store number of tasks per agent
+            task_allocation_counts = [0] * self.num_tsp_agents
 
             # Track current agent positions (start from initial positions)
             agent_current_positions = self.robot_poses.copy()
 
-            # Ensure robot_cost_matrix is a NumPy array
-            robot_cost_matrix_np = np.array(self.robot_cost_matrix)
-
-            # Assign tasks dynamically
             while tasks:
                 best_task, best_agent, min_cost = None, None, float('inf')
 
+                # Try each task with each agent, factoring in both distance and load
                 for task in tasks:
                     for agent_id in range(self.num_tsp_agents):
-                        # Compute distance from the agent's current position to the task
                         if agent_current_positions[agent_id] is not None:
+                            if isinstance(agent_current_positions[agent_id], GeoPoseStamped):
+                                lat = agent_current_positions[agent_id].pose.position.latitude
+                                lon = agent_current_positions[agent_id].pose.position.longitude
+                                alt = agent_current_positions[agent_id].pose.position.altitude
+                            elif isinstance(agent_current_positions[agent_id], GeoPose):
+                                lat = agent_current_positions[agent_id].position.latitude
+                                lon = agent_current_positions[agent_id].position.longitude
+                                alt = agent_current_positions[agent_id].position.altitude
+
                             dist = self.haversine(
-                                agent_current_positions[agent_id].position.latitude,
-                                agent_current_positions[agent_id].position.longitude,
-                                agent_current_positions[agent_id].position.altitude,
+                                lat,
+                                lon,
+                                alt,
                                 self.task_poses[task]["latitude"],
                                 self.task_poses[task]["longitude"],
                                 self.task_poses[task]["altitude"]
                             )
-                            if dist < min_cost:
-                                min_cost = dist
+
+                            # Introduce a load penalty: cost = distance + alpha * current_load
+                            load_penalty = alpha * task_allocation_counts[agent_id]
+                            cost = dist + load_penalty
+
+                            if cost < min_cost:
+                                min_cost = cost
                                 best_task = task
                                 best_agent = agent_id
 
@@ -501,20 +507,27 @@ class CBMPopulationAgentOnline(Node):
                     agent_assignments[best_agent].append(best_task)
                     task_allocation_counts[best_agent] += 1
 
+                    # Update the agent’s position
                     new_geo_pose = GeoPoseStamped()
                     new_geo_pose.pose.position.latitude = self.task_poses[best_task]["latitude"]
                     new_geo_pose.pose.position.longitude = self.task_poses[best_task]["longitude"]
                     new_geo_pose.pose.position.altitude = self.task_poses[best_task]["altitude"]
+                    agent_current_positions[best_agent] = new_geo_pose
 
                     # Remove assigned task from the list
                     tasks.remove(best_task)
 
-            # Step 3: Flatten the ordered task list
-            ordered_task_list = [task for agent_tasks in agent_assignments for task in agent_tasks]
+            # Flatten the ordered task list
+            ordered_task_list = [
+                task
+                for agent_tasks in agent_assignments
+                for task in agent_tasks
+            ]
 
-            # Step 4: Create the (task order, allocations) tuple
+            # Create the (task order, allocations) tuple
             population.append((ordered_task_list, task_allocation_counts))
-        print("generated populations")
+
+        print("Generated balanced population")
         print(f"{population[0]}")
         return population
 
@@ -803,13 +816,14 @@ class CBMPopulationAgentOnline(Node):
                     print(f"[INFO] Agent {self.agent_ID} finished coverage!.")
 
         except Exception as e:
-            # error_message = (
-            #     f"[ERROR] Exception in global_pose_callback for agent {agent}:\n"
-            #     f"    Error Type: {type(e).__name__}\n"
-            #     f"    Error Message: {e}\n"
-            #     f"    Stack Trace:\n{traceback.format_exc()}"
-            # )
+            error_message = (
+                f"[ERROR] Exception in global_pose_callback for agent {agent}:\n"
+                f"    Error Type: {type(e).__name__}\n"
+                f"    Error Message: {e}\n"
+                f"    Stack Trace:\n{traceback.format_exc()}"
+            )
             print(f"{self.coalition_best_solution}")
+            print(error_message)
             # print(error_message)
 
     def handle_covered_task(self, current_task):
@@ -857,7 +871,6 @@ class CBMPopulationAgentOnline(Node):
                 if msg.is_covered[i] and not self.is_covered[i]:  # If new value is True, persist it
                     self.handle_covered_task(i)
                     self.is_covered[i] = True
-
             if self.failed_agents[agent_id - 1]:
                 self.agent_to_revive = agent_id
 
