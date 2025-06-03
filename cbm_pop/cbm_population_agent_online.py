@@ -36,6 +36,9 @@ class CBMPopulationAgentOnline(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_tasks, num_tsp_agents, num_iterations,
                  num_solution_attempts, agent_id, node_name: str, cost_matrix, learning_method):
+        """
+        Initialises the agent on startup
+        """
         super().__init__(node_name)
         self.geoid = GeoidPGM('/home/ajifoster3/Documents/Software/ros2_ws/src/CBM-POP_Implementation/egm96-5.pgm')
 
@@ -158,13 +161,13 @@ class CBMPopulationAgentOnline(Node):
 
             self.kill_robot_subscribers.append(sub)  # Store subscription to prevent garbage collection
 
-            # Wrap the callback to include agent_id
-            self.revive_robot_sub = self.create_subscription(
-                Bool,
-                f'/central_control/uas_{agent_id}/revive_robot',
-                self.revive_robot_callback,
-                10
-            )
+        # Wrap the callback to include agent_id
+        self.revive_robot_sub = self.create_subscription(
+            Bool,
+            f'/central_control/uas_{agent_id}/revive_robot',
+            self.revive_robot_callback,
+            10
+        )
 
         # Timer for periodic execution of the run loop
         self.run_goal_publisher_timer = self.create_timer(0.5, self.publish_goal_pose, callback_group=self.cb_group)
@@ -206,6 +209,10 @@ class CBMPopulationAgentOnline(Node):
         self.is_new_task_covered = False
 
     def calculate_cost_matrix(self):
+        """
+        Returns a cost matrix representing the traversal cost from each task_pose to each other task_pose, this is
+        constructed by calculating the drone_distance between all the task poses in the agents task_pose list.
+        """
         num_tasks = len(self.task_poses)
         cost_map = np.zeros((num_tasks, num_tasks))
         for i in range(num_tasks):
@@ -229,6 +236,10 @@ class CBMPopulationAgentOnline(Node):
         return cost_map
 
     def calculate_robot_cost_matrix(self):
+        """
+        Returns a cost map representing the traversal cost from each robot_pose to each task_pose calculated using
+        drone_distance.
+        """
         # Filter out None values from robot_poses
         valid_robot_poses = [pose for pose in self.robot_poses if pose is not None]
         num_robots = len(valid_robot_poses)
@@ -256,6 +267,11 @@ class CBMPopulationAgentOnline(Node):
         return cost_map
 
     def calculate_robot_inital_pose_cost_matrix(self):
+        """
+        Returns a cost map representing the traversal cost from each initial_robot_pose to each each task_pose calculated
+        using drone_distance.
+        """
+
         # Filter out None values from robot_poses
 
         valid_robot_poses = self.initial_robot_poses
@@ -283,6 +299,12 @@ class CBMPopulationAgentOnline(Node):
         self.robot_inital_pose_cost_matrix = cost_map
 
     def kill_robot_callback(self, msg, failed_agent_true_id):
+        """
+        This Fails a robot.
+        Upon receiving a kill_robot_callback message, the agent checks if it's the agent to be killed.
+        If not: it does nothing.
+        If it is: it sets itself as "failed", sets its goal pose as its current position, and clears its current task.
+        """
         print(f"Kill signal received for agent: {failed_agent_true_id}")
         if failed_agent_true_id == self.true_agent_ID:
             self.am_i_failed = True
@@ -319,8 +341,8 @@ class CBMPopulationAgentOnline(Node):
 
     def purge_agent(self, purge_agent_true_id):
         """
-        Removes the specified agent (1-indexed) from all solutions, reassigning their tasks
-        to the previous agent (or the last agent if it's agent 1).
+        Removes a "purged agent" from the all solutions. Reassigning the agents tasks to the agent with a lower index
+        cyclical).
         """
         print("Purging")
         agent_idx = purge_agent_true_id - 1 - sum(self.failed_agents[:purge_agent_true_id])
@@ -381,6 +403,12 @@ class CBMPopulationAgentOnline(Node):
         print(f"Agent {self.agent_ID}: {self.coalition_best_solution}")
 
     def revive_robot_callback(self, msg):
+        """
+        Revives the agent.
+        If a revive message is received for the agent, it will set itself as unfailed, to be unpurged, and sets the
+        last_purge_agent_true_id to none(is this right?).
+        Then all necessary timers and subscribers are started.
+        """
         self.am_i_failed = False
         self.is_agent_tobe_purged = False
         self.last_purge_agent_true_id = None
@@ -422,6 +450,10 @@ class CBMPopulationAgentOnline(Node):
         print(f"Agent {agent_id} successfully revived and all timers restarted.")
 
     def unpurge_agent(self, agent_id):
+        """
+        Reintroduces the specified agent into the all the solutions, and recalculates the robot cost matrix with the
+        reintroduced agent.
+        """
         print(f"Reviving Agent {agent_id}...")
         # Mark agent as revived
         self.failed_agents[agent_id - 1] = False
@@ -450,6 +482,9 @@ class CBMPopulationAgentOnline(Node):
         self.is_new_robot_cost_matrix = True
 
     def generate_population(self):
+        """
+        Generates the initial solution population.
+        """
         population = []
         print("Generating Population (Balanced)...")
 
@@ -531,12 +566,19 @@ class CBMPopulationAgentOnline(Node):
         print(f"{population[0]}")
         return population
 
+
     def set_coalition_best_solution(self, solution):
+        """
+        Sets the given solution as the best coalition solution and the gets the robots next task from the solution.
+        """
         self.coalition_best_solution = solution
 
         self.assign_next_task(solution)
 
     def assign_next_task(self, solution):
+        """
+        Extracts and sets the current next task for the agent from a given solution
+        """
         try:
             if self.agent_ID - 1 >= len(solution[1]) or self.agent_ID < 0:
                 raise ValueError("Invalid robot_id")
@@ -607,6 +649,7 @@ class CBMPopulationAgentOnline(Node):
     # ----------------------------------------------------------------------------
     def individual_learning(self):
         """
+        Learning with Bellman Equation.
         Updates the weight matrix (Q(s, a)) using the Q-learning formula.
         Only updates the weights for experiences before the lowest relative fitness solution.
         :return: Updated weight matrix
@@ -681,22 +724,33 @@ class CBMPopulationAgentOnline(Node):
                     )
 
     def stopping_criterion(self, iteration_count):
+        """
+        Returns true is the current number of iterations is over a set iteration limit.
+        """
         # Define a stopping criterion (e.g., a fixed number of iterations)
         return iteration_count > self.num_iterations
 
     def end_of_di_cycle(self, cycle_count):
+        """
+        Returns true if the current cycle is equal to or over the length of a DI cycle.
+        """
         if cycle_count >= self.di_cycle_length:
             return True
         return False  # Placeholder; replace with actual condition
 
     def weight_update_callback(self, msg):
+        """
+        Stores received weight matrices.
+        """
         # Callback to process incoming weight matrix updates
         received_weights = self.weight_matrix.unpack_weights(weights_msg=msg, agent_id=self.agent_ID)
         if received_weights is not None:
             self.received_weight_matrices.append(received_weights)
 
     def solution_update_callback(self, msg):
-
+        """
+        Receives a processes a proposed best coalition solution from another agent.
+        """
         if not self.am_i_failed:
             # Callback to process incoming solution updates
             if msg is not None and self.coalition_best_solution is not None:
@@ -763,6 +817,13 @@ class CBMPopulationAgentOnline(Node):
         return (order, new_allocations)
 
     def global_pose_callback(self, msg, agent):
+        """
+        Receives and processes a global pose from another agent.
+        Updating the internal representation of the state.
+        If coverage has yet to start and each agent has a pose, calculate the robot cost matrix and start coverage.
+        If this agent has reached its goal, complete that task.
+        If an agent has finished its tasks, register its completed coverage.
+        """
         try:
             # Store the first received pose for each agent
             if self.initial_robot_poses[agent - 1] is None:
@@ -827,6 +888,11 @@ class CBMPopulationAgentOnline(Node):
             # print(error_message)
 
     def handle_covered_task(self, current_task):
+        """
+        Handles a task covered by this agent.
+        Updating all it's solutions to reflect the new state, and publishing it's new environmental representation.
+        *** TODO: This shouldn't always publish! ***
+        """
         self.is_covered[current_task] = True
         rep = EnvironmentalRepresentation()
         rep.agent_id = self.true_agent_ID
@@ -862,6 +928,10 @@ class CBMPopulationAgentOnline(Node):
         print(f"Task {current_task} is covered: {self.is_covered[current_task]}")
 
     def environmental_representation_callback(self, msg):
+        """
+        On receiving an environmental representation, handle the coverage.
+        If an environmental representation is received from a failed agent, set it be revived.
+        """
         if not self.am_i_failed:
             agent_id = msg.agent_id  # Extract the sender agent's ID
             self.last_env_rep_timestamps[agent_id] = time()  # Store the current time as the last received time
@@ -875,6 +945,10 @@ class CBMPopulationAgentOnline(Node):
                 self.agent_to_revive = agent_id
 
     def check_stale_agents(self):
+        """
+        If a message hasn't been received by an agent within a threshold period, set the agent as failed and to be
+        purged.
+        """
         if not self.am_i_failed:
             current_time = time()
             timeout_threshold = 15  # Define a threshold (e.g., 10 seconds)
@@ -890,6 +964,9 @@ class CBMPopulationAgentOnline(Node):
                         f"Agent {agent_id} has not sent an update for {current_time - last_time:.2f} seconds.")
 
     def environmental_representation_timer_callback(self):
+        """
+        Publish this agents environmental representation.
+        """
         if self.am_i_failed:
             self.environmental_representation_timer.cancel()
             self.environmental_representation_timer = None
@@ -900,6 +977,10 @@ class CBMPopulationAgentOnline(Node):
         self.environmental_representaion_publisher.publish(rep)
 
     def publish_goal_pose(self):
+        """
+        Publish this agents current goal pose to the flight controller.
+        *** Feels like this is violating some good practice (High-level/Low-level) ***
+        """
         if self.am_i_failed:
             self.run_goal_publisher_timer.cancel()
             self.run_goal_publisher_timer = None
@@ -976,7 +1057,13 @@ class CBMPopulationAgentOnline(Node):
 
     @staticmethod
     def haversine(lat1, lon1, alt1, lat2, lon2, alt2):
-
+        """
+        Calculates Haversine distance
+        a = sin²(Δφ/2) + cos φ1 ⋅ cos φ2 ⋅ sin²(Δλ/2)
+        c = 2 ⋅ asin( √a )
+        d = R ⋅ c
+        φ is latitude, λ is longitude, R is earth’s radius (mean radius = 6378160)
+        """
         R = 6378160  # Earth radius in miles (for km use 6372.8)
 
         # Convert lat/lon from degrees to radians
@@ -999,16 +1086,25 @@ class CBMPopulationAgentOnline(Node):
         return distance_3D
 
     def select_random_solution(self):
+        """
+        Sample a random solution from the population.
+        """
         temp_solution = sample(population=self.population, k=1)[0]
         if temp_solution != self.current_solution:
             return temp_solution
 
     def robot_cost_matrix_recalculation(self):
+        """
+        Recalculate the robot cost matrix
+        """
         if all(pose is not None for pose in self.robot_poses):
             self.new_robot_cost_matrix = self.calculate_robot_cost_matrix()
             self.is_new_robot_cost_matrix = True
 
     def regular_solution_publish_timer(self):
+        """
+        Publishes the coalition best solution.
+        """
         if self.am_i_failed:
             self.solution_publisher_timer.cancel()
             self.solution_publisher_timer = None
