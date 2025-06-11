@@ -71,7 +71,6 @@ class Fitness:
 
             avg_cost = total_cost / num_agents_with_tasks if num_agents_with_tasks > 0 else 0
             weighted_cost = alpha * max_cost + (1 - alpha) * avg_cost
-
             return weighted_cost
         except Exception as e:
             error_message = (
