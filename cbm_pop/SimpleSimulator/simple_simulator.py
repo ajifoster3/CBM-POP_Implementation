@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import matplotlib.ticker as ticker
+import simulator_agent as agent
 
 class SimpleSimulator:
     def __init__(self, tasks, environmental_bounds, robot_starting_positions, robot_speed, obstacles):
@@ -18,7 +19,12 @@ class SimpleSimulator:
         self.t = 0
         self.robot_positions = self.robot_starting_positions
 
-        self.robot_goal_pose = [13,4]
+        self.robot_goal_poses = [[[13, 4], [2, 14], [2, 4], [10, 6]], [[5, 4], [14, 13], [2, 13], [1, 3]]]
+
+        self.robots = []
+
+        for i in range(len(self.robot_goal_poses)):
+            self.robots.append(agent.SimulatorAgent(robot_starting_positions[i], robot_speed, self.robot_goal_poses[i]))
 
         # Setup the plot
         fig, ax = plt.subplots()
@@ -29,7 +35,7 @@ class SimpleSimulator:
         ax.minorticks_on()
         robot1, = ax.plot([], [], 'ro', label='Robot 1')  # red dot
         robot2, = ax.plot([], [], 'bo', label='Robot 2')  # blue dot
-        taskplots, = ax.plot([],[], '.', markersize=0.1, label='Tasks')
+        taskplots, = ax.plot([], [], '.', markersize=0.1, label='Tasks')
         path1, = ax.plot([], [], 'r--', alpha=0.5)  # Robot 1 path
         path2, = ax.plot([], [], 'b--', alpha=0.5)  # Robot 2 path
 
@@ -50,33 +56,14 @@ class SimpleSimulator:
 
         # Update function for animation
         def update(frame):
-            robot1.set_data([self.robot_positions[1][0][self.t]], [self.robot_positions[1][1][self.t]])
-            robot2.set_data([self.robot_positions[0][0][self.t]], [self.robot_positions[0][1][self.t]])
-            path1.set_data(self.robot_positions[1][0][:self.t], self.robot_positions[1][1][:self.t])
-            path2.set_data(self.robot_positions[0][0][:self.t], self.robot_positions[0][1][:self.t])
-            self.robot_positions[1][0].append(self.robot_positions[1][0][self.t])
-            self.robot_positions[1][1].append(self.robot_positions[1][1][self.t])
+            robot1.set_data([self.robots[0].robot_position[0][self.t], self.robots[0].robot_position[1][self.t]])
+            robot2.set_data([self.robots[1].robot_position[0][self.t], self.robots[1].robot_position[1][self.t]])
 
-            robot_position_x = self.robot_positions[0][0][self.t]
-            robot_position_y = self.robot_positions[0][1][self.t]
+            path1.set_data([self.robots[0].robot_position[0][:self.t], self.robots[0].robot_position[1][:self.t]])
+            path2.set_data([self.robots[1].robot_position[0][:self.t], self.robots[1].robot_position[1][:self.t]])
 
-            goal_position_x = self.robot_goal_pose[0]
-            goal_position_y = self.robot_goal_pose[1]
-
-            difference_x = goal_position_x-robot_position_x
-            difference_y = goal_position_y-robot_position_y
-
-            angle = math.atan2(difference_y, difference_x)
-
-            self.robot_positions[1][0].append(self.robot_positions[1][0][self.t])
-            self.robot_positions[1][1].append(self.robot_positions[1][1][self.t])
-            if (not (0.02 > robot_position_x) or not (0.02 < robot_position_x)) and (
-                    robot_position_y >= goal_position_y + 0.02 or robot_position_y <= goal_position_y - 0.02):
-                    self.robot_positions[0][0].append(self.robot_positions[0][0][self.t] + math.cos(angle) * robot_speed)
-                    self.robot_positions[0][1].append(self.robot_positions[0][1][self.t] + math.sin(angle) * robot_speed)
-            else:
-                self.robot_positions[0][0].append(self.robot_positions[0][0][self.t])
-                self.robot_positions[0][1].append(self.robot_positions[0][1][self.t])
+            for robot in self.robots:
+                robot.move_robot()
             self.t += 1
 
             return robot1, robot2, path1, path2
@@ -93,6 +80,4 @@ if __name__ == '__main__':
     for i in range(environmental_bounds[1]):
         for j in range(environmental_bounds[3]):
             tasks.append([i+0.5, j+0.5])
-
-
-    SimpleSimulator(tasks,environmental_bounds,[[[7], [5]], [[8], [5]]],0.025,1)
+    SimpleSimulator(tasks, environmental_bounds, [[[7], [5]], [[8], [5]]], 0.05, 1)
