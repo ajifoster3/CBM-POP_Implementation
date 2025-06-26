@@ -7,7 +7,7 @@ package_name = 'cbm_pop'
 setup(
     name=package_name,
     version='0.1.0',
-    packages=[package_name],
+    packages=find_packages(include=['cbm_pop', 'cbm_pop.*']),
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
@@ -27,6 +27,9 @@ setup(
             'cbm_population_agent_llm = cbm_pop.cbm_population_agent_llm:main',
             'llm_interface_agent = cbm_pop.llm_interface_agent:main',
             'cbm_population_agent_online = cbm_pop.cbm_population_agent_online:main',
+            'cbm_population_agent_online_simple_simulation = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation:main',
+            'simple_simulator = cbm_pop.SimpleSimulator.simple_simulator:main',
+            'simulator_robot = cbm_pop.SimpleSimulator.simulator_robot:main',
             'cbm_population_agent_offline = cbm_pop.cbm_population_agent_offline:main',
             'kill_robot_at_time = cbm_pop.kill_robot_at_time:main',
             'decentralised_tracker = cbm_pop.decentralised_tracker:main',

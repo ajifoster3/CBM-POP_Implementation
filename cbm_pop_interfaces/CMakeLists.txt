@@ -13,6 +13,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Solution.msg"
   "msg/Weights.msg"
   "msg/EnvironmentalRepresentation.msg"
+  "msg/SimplePosition.msg"
+  "msg/FinishedCoverage.msg"
  )
 
 # uncomment the following section in order to fill in

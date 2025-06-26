@@ -34,7 +34,7 @@ class Fitness:
         return max_cost
 
     @staticmethod
-    def fitness_function_robot_pose(solution, cost_matrix, robot_cost_matrix, initial_robot_cost_matrix, alpha=0.5):
+    def fitness_function_robot_pose(solution, cost_matrix, robot_cost_matrix, initial_robot_cost_matrix, alpha=0.5, islog=False):
         """
         Computes a weighted sum of the maximum path cost and the average path cost for agents in the solution.
         :param solution: Solution to be calculated (task_order, agent_task_counts)
@@ -49,21 +49,33 @@ class Fitness:
             max_cost = 0
             total_cost = 0
             num_agents_with_tasks = 0
-
+            log = "Fitness Function Log **********\n"
             counter = 0
             for agent_idx, task_count in enumerate(agent_task_counts):
                 if task_count > 0:
+                    if islog:
+                        log += f"Agent {agent_idx}\n"
 
                     agent_cost = robot_cost_matrix[agent_idx][task_order[counter]]  # Cost from robot to first task
-
+                    if islog:
+                        log += f"Initial cost to task {task_order[counter]}: {agent_cost}\n"
                     for i in range(counter, counter + task_count - 1):
                         task_i = task_order[i]
                         task_j = task_order[i + 1]
+                        if islog:
+                            log += f"Travelling from task {task_order[i]} to task {task_order[i+1]} costs: {cost_matrix[task_i][task_j]}\n"
                         agent_cost += cost_matrix[task_i][task_j]
 
+                    if islog:
+                        log += f"returning home from task {task_order[counter + task_count - 1]} costs {initial_robot_cost_matrix[agent_idx][task_order[counter + task_count - 1]]}\n"
                     agent_cost += initial_robot_cost_matrix[agent_idx][task_order[counter + task_count - 1]]
 
                     max_cost = max(max_cost, agent_cost)
+
+                    if islog:
+                        log += f"max cost = {max_cost}\n"
+
+
                     total_cost += agent_cost
                     num_agents_with_tasks += 1
 
@@ -71,6 +83,11 @@ class Fitness:
 
             avg_cost = total_cost / num_agents_with_tasks if num_agents_with_tasks > 0 else 0
             weighted_cost = alpha * max_cost + (1 - alpha) * avg_cost
+            if islog:
+                log += f"Average cost: {avg_cost}\n"
+                log += f"Weighted cost: {weighted_cost}\n"
+                log += "Fitness Function Log END **********\n"
+                print(log)
             return weighted_cost
         except Exception as e:
             error_message = (

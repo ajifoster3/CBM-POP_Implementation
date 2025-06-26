@@ -1,0 +1,3 @@
+int32 robot_id
+float64 x_position
+float64 y_position

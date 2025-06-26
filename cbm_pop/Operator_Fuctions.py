@@ -60,19 +60,19 @@ class OperatorFunctions:
         :return: A child solution
         """
         # Get the function based on the operator
-
+        current_copy = deepcopy(current_solution)
         if operator in OperatorFunctions.operator_function_map:
             # Call the function and pass arguments as needed
             if operator == Operator.BEST_COST_ROUTE_CROSSOVER:
-                return OperatorFunctions.operator_function_map[operator](current_solution, population, cost_matrix,
+                return OperatorFunctions.operator_function_map[operator](current_copy, population, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
             elif (operator == Operator.SINGLE_ACTION_REROUTING
                   or operator == Operator.TWO_SWAP
                   or operator == Operator.ONE_MOVE):
-                return OperatorFunctions.operator_function_map[operator](current_solution, cost_matrix,
+                return OperatorFunctions.operator_function_map[operator](current_copy, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
             else:
-                return OperatorFunctions.operator_function_map[operator](current_solution)
+                return OperatorFunctions.operator_function_map[operator](current_copy)
 
         # Raise an exception if the operator is not recognized
         raise Exception("Something went wrong! The selected operation doesn't exist.")
