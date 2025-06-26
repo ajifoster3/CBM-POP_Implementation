@@ -230,7 +230,7 @@ class MainWindow(QMainWindow):
 
     def run_process(self):
         # Run the external process in a separate thread to avoid blocking the GUI
-        subprocess.Popen(["./resources/launch_5_agents.sh", str(self.instance_count), str(float(self.runtime)),
+        subprocess.Popen(["./resources/launch_5_agents_offline.sh", str(self.instance_count), str(float(self.runtime)),
                           str(self.learning_method), str(self.bulk_run_count)])
         # Reset and start progress bar
         self.progress_bar.setValue(0)

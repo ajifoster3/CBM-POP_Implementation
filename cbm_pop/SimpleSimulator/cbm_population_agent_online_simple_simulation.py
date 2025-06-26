@@ -40,14 +40,14 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                  gamma_decay = None,
                  positive_reward = None,
                  negative_reward = None,
-                 num_tsp_agents = 5):
+                 num_tsp_agents = 10):
 
         """
         Initialises the agent on startup
         """
         super().__init__(node_name)
         self.current_task = None
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
+        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
 
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
@@ -730,7 +730,11 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
         if all(self.finished_robots):
             print("Coverage Complete")
-            self.destroy_node()
+            self.destroy_node()  # Stop this node
+
+            # Shutdown ROS2 system
+            rclpy.shutdown()  # This ensures that ROS2 itself is properly shut down
+            print("ROS2 system shut down.")
 
 
     def solution_update_callback(self, msg):
@@ -882,7 +886,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         *** TODO: This shouldn't always publish! ***
         """
         if self.is_loop_started:
-            print(f"Agent {self.agent_ID} is processing covered task")
             self.is_covered[current_task] = True
             rep = EnvironmentalRepresentation()
             rep.agent_id = self.true_agent_ID
@@ -1070,7 +1073,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         """
         A single step of the `run` method, executed periodically by the ROS2 timer.
         """
-        print(f"Agent {self.agent_ID} runstep")
         if self.am_i_failed:
             return
 
@@ -1282,19 +1284,21 @@ def main(args=None):
 
     temp_node = Node("parameter_loader")
     temp_node.declare_parameter("agent_id", 1)
-    temp_node.declare_parameter("runtime", 60.0)
+    temp_node.declare_parameter("runtime", -1.0)
     temp_node.declare_parameter("learning_method", "Ferreira et al.")
+    temp_node.declare_parameter("num_tsp_agents", 5)
 
     agent_id = temp_node.get_parameter("agent_id").value
     runtime = temp_node.get_parameter("runtime").value
     learning_method = temp_node.get_parameter("learning_method").value
+    num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
     temp_node.destroy_node()
 
     node_name = f"cbm_population_agent_{agent_id}"
     agent = CBMPopulationAgentOnlineSimpleSimulation(
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_iterations=9999999, num_solution_attempts=21, agent_id=agent_id,
-        node_name=node_name, learning_method=learning_method
+        node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 
@@ -1321,7 +1325,9 @@ def main(args=None):
     finally:
         agent.destroy_node()
         if rclpy.ok():
+            executor.shutdown()
             rclpy.shutdown()
+            sys.exit(0)
 
 
 if __name__ == '__main__':

@@ -92,7 +92,11 @@ class SimpleFitnessLogger(Node):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
         if all(self.finished_robots):
             print("Coverage Complete")
-            self.destroy_node()
+            self.destroy_node()  # Stop this node
+
+            # Shutdown ROS2 system
+            rclpy.shutdown()  # This ensures that ROS2 itself is properly shut down
+            print("ROS2 system shut down.")
 
 
     def global_pose_callback(self, msg, agent):
@@ -143,7 +147,7 @@ class SimpleFitnessLogger(Node):
 def main(args=None):
     rclpy.init(args=args)
 
-    fitness_logger = FitnessLogger()
+    fitness_logger = SimpleFitnessLogger()
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(fitness_logger)
 

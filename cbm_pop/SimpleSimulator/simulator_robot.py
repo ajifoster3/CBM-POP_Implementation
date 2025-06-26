@@ -1,4 +1,6 @@
 import math
+import sys
+
 from cbm_pop_interfaces.msg import SimplePosition, FinishedCoverage
 from rclpy.executors import MultiThreadedExecutor
 import numpy as np
@@ -62,6 +64,7 @@ class SimulatorRobot(Node):
         if all(self.finished_robots):
             print("Coverage Complete")
             self.is_finished = True
+            self.destroy_node()
 
     def publish_position(self):
         position = SimplePosition()
