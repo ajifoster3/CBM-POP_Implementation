@@ -751,8 +751,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 current_task_count = sum(self.coalition_best_solution[1])
 
                 if received_task_count < current_task_count:
-                    print(
-                        f"Adjusting my solution: I have {current_task_count} tasks, but the received solution has {received_task_count}.")
+                    #print(
+                    #    f"Adjusting my solution: I have {current_task_count} tasks, but the received solution has {received_task_count}.")
 
                     # Remove excess tasks and update allocations
                     self.coalition_best_solution = self.remove_extra_tasks(self.coalition_best_solution,
@@ -774,7 +774,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
                 # If the received solution is better, update the coalition best solution
                 if their_solution_fitness < our_solution_fitness:
-                    print(f"recieved a better solution: their fitness: {their_solution_fitness}, out fitness: {our_solution_fitness}")
+                    #print(f"recieved a better solution: their fitness: {their_solution_fitness}, out fitness: {our_solution_fitness}")
                     self.set_coalition_best_solution(received_solution)
                     self.coalition_best_agent = msg.id
 
@@ -848,7 +848,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 distance = math.sqrt(((x - goal_x) ** 2)+((y - goal_y) ** 2))
 
                 if agent == self.true_agent_ID and distance < 0.4:
-                    print(f"[INFO] Agent {self.agent_ID} covered position {task}.")
+                    #print(f"[INFO] Agent {self.agent_ID} covered position {task}.")
                     self.task_covered = task
                     self.is_new_task_covered = True
                     return
@@ -918,7 +918,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             self.current_solution = update_solution(self.current_solution)
             self.coalition_best_solution = update_solution(self.coalition_best_solution)
             self.assign_next_task(self.coalition_best_solution)
-            print(f"Task {current_task} is covered: {self.is_covered[current_task]}")
+            #print(f"Task {current_task} is covered: {self.is_covered[current_task]}")
 
     def environmental_representation_callback(self, msg):
         """
