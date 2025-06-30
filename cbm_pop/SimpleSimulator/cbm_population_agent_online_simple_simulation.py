@@ -36,10 +36,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_iterations,
                  num_solution_attempts, agent_id, node_name: str, learning_method,
-                 lr = None,
-                 gamma_decay = None,
-                 positive_reward = None,
-                 negative_reward = None,
+                 lr = 0.5,
+                 gamma_decay = 0.99,
+                 positive_reward = 1,
+                 negative_reward = -0.5,
                  num_tsp_agents = 10):
 
         """
