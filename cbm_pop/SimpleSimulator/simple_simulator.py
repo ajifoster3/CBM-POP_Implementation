@@ -137,7 +137,20 @@ def main():
     spin_thread.start()
 
     def shutdown():
-        print("All robots finished. Shutting down nodes...")
+        print("All robots finished.")
+
+        # Compute path lengths
+        path_lengths = [np.sum(
+            np.linalg.norm(np.diff(np.array(robot.get_robot_position()), axis=0), axis=1)
+        ) for robot in simulator.robots]
+
+        longest_path = max(path_lengths)
+        average_path = np.mean(path_lengths)
+
+        print(f"Longest robot path length: {longest_path:.2f}")
+        print(f"Average robot path length: {average_path:.2f}")
+
+        # Shutdown
         plt.close('all')
         executor.shutdown()
         rclpy.shutdown()
