@@ -15,6 +15,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/EnvironmentalRepresentation.msg"
   "msg/SimplePosition.msg"
   "msg/FinishedCoverage.msg"
+  "msg/CurrentTask.msg"
  )
 
 # uncomment the following section in order to fill in

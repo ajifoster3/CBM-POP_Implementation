@@ -1,0 +1,2 @@
+int32 agent_id
+int32 current_task
