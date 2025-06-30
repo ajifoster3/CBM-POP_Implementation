@@ -50,10 +50,17 @@ class SimulatorRobot(Node):
             difference_x = goal_position_x - robot_position_x
             difference_y = goal_position_y - robot_position_y
 
-            angle = math.atan2(difference_y, difference_x)
+            distance = math.hypot(difference_x, difference_y)
 
-            if abs(goal_position_x - robot_position_x) > 0.02 or abs(goal_position_y - robot_position_y) > 0.05:
-                self.robot_position.append((self.robot_position[-1][0] + math.cos(angle) * self.robot_speed, self.robot_position[-1][-1] + math.sin(angle) * self.robot_speed))
+            if distance > 1e-3:  # a small tolerance to avoid floating point noise
+                if distance <= self.robot_speed:
+                    new_x, new_y = goal_position_x, goal_position_y
+                else:
+                    angle = math.atan2(difference_y, difference_x)
+                    new_x = robot_position_x + math.cos(angle) * self.robot_speed
+                    new_y = robot_position_y + math.sin(angle) * self.robot_speed
+
+                self.robot_position.append((new_x, new_y))
             else:
                 self.robot_position.append(self.robot_position[-1])
         else:
