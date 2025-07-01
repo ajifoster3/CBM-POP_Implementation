@@ -745,12 +745,24 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
             self.received_weight_matrices.append(received_weights)
 
     def current_task_update_callback(self, msg):
-        self.current_tasks[msg.agent_id] = msg.current_task
-        # If I and the sending robot both have the same task, we need to find who is better suited
-        if msg.current_task == self.current_task:
-            if self.robot_cost_matrix[msg.agent_id][self.current_task] < self.robot_cost_matrix[self.agent_ID][self.current_task]:
-                #print(f"robot {msg.agent_id} outcompeted robot {self.agent_ID} to task {self.current_tasks}, their {self.robot_cost_matrix[msg.agent_id][self.current_task]} our {self.robot_cost_matrix[self.agent_ID][self.current_task]}")
-                self.assign_next_task(self.coalition_best_solution)
+        try:
+            if self.current_tasks[msg.agent_id] != msg.current_task:
+                self.current_tasks[msg.agent_id] = msg.current_task
+                self.handle_allocated_task(msg.current_task)
+                # If I and the sending robot both have the same task, we need to find who is better suited
+                if msg.current_task == self.current_task:
+                    if self.robot_cost_matrix[msg.agent_id][self.current_task] < self.robot_cost_matrix[self.agent_ID][self.current_task]:
+                        #print(f"robot {msg.agent_id} outcompeted robot {self.agent_ID} to task {self.current_tasks}, their {self.robot_cost_matrix[msg.agent_id][self.current_task]} our {self.robot_cost_matrix[self.agent_ID][self.current_task]}")
+                        self.assign_next_task(self.coalition_best_solution)
+        except Exception as e:
+            error_message = (
+                f"[ERROR] Exception in current task update callback:\n"
+                f"    Error Type: {type(e).__name__}\n"
+                f"    Error Message: {e}\n"
+                f"    Stack Trace:\n{traceback.format_exc()}"
+            )
+            #print(f"{self.coalition_best_solution}")
+            print(error_message)
 
         #print(f"{self.robot_tasks}")
 
@@ -912,7 +924,7 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
         if self.is_loop_started:
 
             # Function to update a given solution
-            def update_solution(solution):
+            def update_solution(solution, current_task):
                 if solution is None:
                     return None
 
@@ -929,12 +941,12 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                 # Update population
 
             for idx, solution in enumerate(self.population):
-                self.population[idx] = update_solution(solution)
+                self.population[idx] = update_solution(solution, current_task)
 
             # Update current_solution and coalition_best_solution if they exist
-            self.current_solution = update_solution(self.current_solution)
-            self.coalition_best_solution = update_solution(self.coalition_best_solution)
-            print(f"Task {current_task} is allocated: {self.is_covered[current_task]}")
+            self.current_solution = update_solution(self.current_solution, current_task)
+            self.coalition_best_solution = update_solution(self.coalition_best_solution, current_task)
+            #print(f"Task {current_task} is allocated: {self.is_covered[current_task]}")
 
     def handle_covered_task(self, current_task, is_this_agent=False):
         """
@@ -1212,6 +1224,8 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                                                                                     self.robot_initial_pose_cost_matrix)
 
             if self.coalition_best_solution:
+                #print(f"Current Tasks: {self.current_tasks}\n\n")
+                #print(f"Current Solution: {self.coalition_best_solution}\n\n")
                 coalition_best_solution_fitness = Fitness.fitness_function_locked_tasks(self.coalition_best_solution,
                                                                                         self.cost_matrix,
                                                                                         self.current_tasks,
