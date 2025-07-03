@@ -1,0 +1,2 @@
+int32 agent_id
+float32 cumulative_reward

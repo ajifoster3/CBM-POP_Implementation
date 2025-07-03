@@ -27,7 +27,8 @@ from cbm_pop_interfaces.msg import (Solution,
                                     EnvironmentalRepresentation,
                                     SimplePosition,
                                     FinishedCoverage,
-                                    CurrentTask)
+                                    CurrentTask,
+                                    CumulativeReward)
 from enum import Enum
 from math import radians, cos, sin, asin, sqrt
 from std_msgs.msg import Bool
@@ -208,6 +209,12 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
             10
         )
 
+        self.cumulative_reward_publisher = self.create_publisher(
+            CumulativeReward,
+            "/cumulative_reward",
+            10
+        )
+
         self.environmental_representation_timer = self.create_timer(2, self.environmental_representation_timer_callback,
                                                                     callback_group=self.cb_group)
 
@@ -227,6 +234,7 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
         self.gamma_decay = gamma_decay  # it can be change interms of iteration
         self.positive_reward = positive_reward
         self.negative_reward = negative_reward
+        self.cumulative_reward = 0
 
         self.run_timer = None
         self.is_loop_started = False
@@ -687,6 +695,12 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                 self.reward = 1
             else:
                 self.reward = -0.5
+
+            self.cumulative_reward += self.reward
+            msg = CumulativeReward()
+            msg.agent_id = self.agent_ID
+            msg.cumulative_reward = float(self.cumulative_reward)
+            self.cumulative_reward_publisher.publish(msg)
 
             updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
             updated_q = max(updated_q, 1e-6)

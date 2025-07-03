@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SimplePosition.msg"
   "msg/FinishedCoverage.msg"
   "msg/CurrentTask.msg"
+  "msg/CumulativeReward.msg"
  )
 
 # uncomment the following section in order to fill in
