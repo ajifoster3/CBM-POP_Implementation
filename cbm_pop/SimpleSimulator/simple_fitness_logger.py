@@ -9,7 +9,7 @@ from cbm_pop.Fitness import Fitness
 from cbm_pop.fitness_logger import FitnessLogger
 from cbm_pop_interfaces.msg import Solution
 from std_msgs.msg import Bool
-from cbm_pop_interfaces.msg import EnvironmentalRepresentation, SimplePosition, FinishedCoverage
+from cbm_pop_interfaces.msg import EnvironmentalRepresentation, SimplePosition, FinishedCoverage, CumulativeReward
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from time import time
@@ -26,10 +26,11 @@ class SimpleFitnessLogger(Node):
         self.declare_parameter('timeout', 0.0)
         self.timeout = self.get_parameter('timeout').get_parameter_value().double_value
 
-        self.num_tsp_agents = 5
+        self.num_tsp_agents = 10
         self.is_all_poses_set = False
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.position_log_file = f"resources/run_logs/robot_positions_{timestamp}.csv"
+        self.cumulative_log_file = f"resources/run_logs/cumulative_reward_{timestamp}.csv"
 
 
         with open(self.position_log_file, mode="w", newline="") as file:
@@ -40,7 +41,7 @@ class SimpleFitnessLogger(Node):
         self.is_covered = None
         self.persistent_environmental_representation = None
         self.environmental_representation = None
-        self.solution_subscriber = None
+        self.cumulative_reward_subscriber = None
 
         self.stop_subscriber = self.create_subscription(Bool, 'stop_plotting', self.stop_callback, 10)
         self.best_fitness = None
@@ -75,6 +76,13 @@ class SimpleFitnessLogger(Node):
             10
         )
 
+        self.cumulative_reward_subscriber = self.create_subscription(
+            CumulativeReward,
+            '/cumulative_reward',
+            self.cumulative_reward_callback,
+            10
+            )
+
     def check_timeout(self):
         """Check if 10 seconds have passed without receiving an EnvironmentalRepresentation message."""
         if self.last_env_update_time is None:
@@ -89,6 +97,7 @@ class SimpleFitnessLogger(Node):
             rclpy.shutdown()
 
     def finished_coverage_callback(self, msg):
+        print(f"finished robot ID: {msg.robot_id}")
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
         if all(self.finished_robots):
             print("Coverage Complete")
@@ -98,6 +107,15 @@ class SimpleFitnessLogger(Node):
             rclpy.shutdown()  # This ensures that ROS2 itself is properly shut down
             print("ROS2 system shut down.")
 
+    def cumulative_reward_callback(self, msg):
+        cumulative_reward = msg.agent_id, msg.cumulative_reward
+        self.log_cumulative_reward(cumulative_reward)
+
+    def log_cumulative_reward(self, cumulative_reward):
+        with open(self.cumulative_log_file, mode='a', newline='') as file:
+            timestamp = time() - self.logging_start_time
+            writer = csv.writer(file)
+            writer.writerow([cumulative_reward[0], cumulative_reward[1], timestamp])
 
     def global_pose_callback(self, msg, agent):
         # Store the first received pose for each agent
@@ -106,6 +124,9 @@ class SimpleFitnessLogger(Node):
 
         if all(pose is not None for pose in self.robot_poses) and self.is_all_poses_set is False:
             self.is_all_poses_set = True
+            self.solution_subscriber = self.create_subscription(Solution, 'best_solution',
+                                                                self.solution_update_callback,
+                                                                10)
 
         self.robot_poses[agent] = (msg.x_position, msg.y_position)
 
@@ -124,12 +145,6 @@ class SimpleFitnessLogger(Node):
     def solution_update_callback(self, msg):
         if msg and self.clock_time is not None:
             solution = (msg.order, msg.allocations)
-            fitness = Fitness.fitness_function_robot_pose(solution, self.cost_matrix, self.robot_cost_matrix,
-                                                          self.robot_inital_pose_cost_matrix)
-            if self.best_fitness is None or fitness < self.best_fitness:
-                self.best_fitness = fitness
-                self.get_logger().info(f"ROS Time: {self.clock_time:.2f}s, Fitness: {fitness}")
-                self.log_fitness(self.clock_time, fitness)
         else:
             self.get_logger().warning("Received empty message or no clock time available")
 
