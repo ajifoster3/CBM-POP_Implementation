@@ -1,4 +1,5 @@
 import csv
+import math
 from datetime import datetime
 from time import time
 import rclpy
@@ -9,10 +10,12 @@ from cbm_pop.Fitness import Fitness
 from cbm_pop.fitness_logger import FitnessLogger
 from cbm_pop_interfaces.msg import Solution
 from std_msgs.msg import Bool
-from cbm_pop_interfaces.msg import EnvironmentalRepresentation, SimplePosition, FinishedCoverage, CumulativeReward
+from cbm_pop_interfaces.msg import EnvironmentalRepresentation, SimplePosition, FinishedCoverage, CumulativeReward, CurrentTask
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from time import time
+import numpy as np
+import os  # Add at top if not already imported
 
 class SimpleFitnessLogger(Node):
     def __init__(self):
@@ -27,11 +30,20 @@ class SimpleFitnessLogger(Node):
         self.timeout = self.get_parameter('timeout').get_parameter_value().double_value
 
         self.num_tsp_agents = 10
+        self.current_tasks = [-1] * self.num_tsp_agents
         self.is_all_poses_set = False
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.position_log_file = f"resources/run_logs/robot_positions_{timestamp}.csv"
-        self.cumulative_log_file = f"resources/run_logs/cumulative_reward_{timestamp}.csv"
 
+        self.run_folder = f"resources/run_logs/{timestamp}"
+        os.makedirs(self.run_folder, exist_ok=True)
+
+        self.position_log_file = os.path.join(self.run_folder, "robot_positions.csv")
+        self.cumulative_log_file = os.path.join(self.run_folder, "cumulative_reward.csv")
+        self.fitness_log_file = os.path.join(self.run_folder, "fitness_log_file.csv")
+
+        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
+        self.cost_matrix = self.calculate_cost_matrix()
+        self.robot_inital_pose_cost_matrix = [None] * self.num_tsp_agents
 
         with open(self.position_log_file, mode="w", newline="") as file:
             writer = csv.writer(file)
@@ -81,7 +93,63 @@ class SimpleFitnessLogger(Node):
             '/cumulative_reward',
             self.cumulative_reward_callback,
             10
-            )
+        )
+
+        self.current_task_subscriber = self.create_subscription(
+            CurrentTask, 'current_task', self.current_task_update_callback, 10)
+
+    def calculate_cost_matrix(self):
+        """
+        Returns a cost matrix representing the traversal cost from each task_pose to each other task_pose, this is
+        constructed by calculating the drone_distance between all the task poses in the agents task_pose list.
+        """
+        num_tasks = len(self.task_poses)
+        cost_map = np.zeros((num_tasks, num_tasks))
+        for i in range(num_tasks):
+            for j in range(num_tasks):
+                if i != j:
+                    # Extract positions
+                    x1, y1 = self.task_poses[i][0], self.task_poses[i][1]
+                    x2, y2 = self.task_poses[j][0], self.task_poses[j][1]
+
+                    # Compute horizontal and vertical distances
+                    x_dist = abs(x2 - x1)
+                    y_dist = abs(y2 - y1)
+                    # Compute cost using trajectory generation function
+                    cost = math.sqrt((x_dist ** 2) + (y_dist ** 2))
+
+                    cost_map[i][j] = cost
+        return cost_map
+
+    def calculate_robot_inital_pose_cost_matrix(self):
+        """
+        Returns a cost map representing the traversal cost from each initial_robot_pose to each each task_pose calculated
+        using drone_distance.
+        """
+
+        # Filter out None values from robot_poses
+
+        valid_robot_poses = self.initial_robot_poses
+        num_robots = len(valid_robot_poses)
+        num_tasks = len(self.task_poses)
+
+        # Initialize cost matrix
+        cost_map = np.zeros((num_robots, num_tasks))
+
+        for i, robot_pose in enumerate(valid_robot_poses):
+            for j, task_pose in enumerate(self.task_poses):
+                # Extract positions
+                x1, y1 = robot_pose
+                x2, y2 = task_pose
+
+                # Compute horizontal and vertical distances
+                x_dist = x2 - x1
+                y_dist = y2 - y1
+                # Compute cost using trajectory generation function
+                cost = math.sqrt((x_dist ** 2) + (y_dist ** 2))
+
+                cost_map[i][j] = cost
+        self.robot_inital_pose_cost_matrix = cost_map
 
     def check_timeout(self):
         """Check if 10 seconds have passed without receiving an EnvironmentalRepresentation message."""
@@ -124,6 +192,7 @@ class SimpleFitnessLogger(Node):
 
         if all(pose is not None for pose in self.robot_poses) and self.is_all_poses_set is False:
             self.is_all_poses_set = True
+            self.initial_robot_pose_cost_matrix = self.calculate_robot_inital_pose_cost_matrix()
             self.solution_subscriber = self.create_subscription(Solution, 'best_solution',
                                                                 self.solution_update_callback,
                                                                 10)
@@ -142,16 +211,20 @@ class SimpleFitnessLogger(Node):
     def clock_callback(self, msg):
         self.clock_time = msg.clock.sec + msg.clock.nanosec / 1e9
 
+
+    def current_task_update_callback(self, msg):
+        self.current_tasks[msg.agent_id] = msg.current_task
+
     def solution_update_callback(self, msg):
-        if msg and self.clock_time is not None:
+        if msg and all(x is not None for x in self.current_tasks) is not None:
+            timestamp = time() - self.logging_start_time
             solution = (msg.order, msg.allocations)
+            fitness = Fitness.fitness_function_locked_tasks(solution, self.cost_matrix, self.current_tasks, self.robot_inital_pose_cost_matrix)
+            with open(self.fitness_log_file, mode='a', newline='') as file:
+                writer = csv.writer(file)
+                writer.writerow([timestamp, fitness])
         else:
             self.get_logger().warning("Received empty message or no clock time available")
-
-    def log_fitness(self, ros_time, fitness):
-        with open(self.log_file, mode='a', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow([ros_time, fitness])
 
     def stop_callback(self, msg):
         if msg.data:
