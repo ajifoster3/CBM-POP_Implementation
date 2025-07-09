@@ -5,10 +5,15 @@ NUM_AGENTS=10
 NUM_RUNS=10  # <-- Number of times to repeat the whole process
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
-AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
+AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation_lock"
 SIM_EXECUTABLE="simple_simulator"
 RUNTIME=-1.0  # seconds
 LEARNING_METHOD="Q-Learning"
+LR=0.5
+GAMMA_DECAY=0.5
+POSITIVE_REWARD=1.0
+NEGATIVE_REWARD=-0.5
+
 
 # Optional: source your ROS 2 workspace
 # source ~/ros_ws/install/setup.bash
@@ -37,7 +42,11 @@ for ((run=1; run<=NUM_RUNS; run++)); do
       -p agent_id:=$i \
       -p runtime:=$RUNTIME \
       -p learning_method:="$LEARNING_METHOD" \
-      -p num_tsp_agents:=$NUM_AGENTS &
+      -p num_tsp_agents:=$NUM_AGENTS \
+      -p lr:=$LR \
+      -p gamma_decay:=$GAMMA_DECAY \
+      -p positive_reward:=$POSITIVE_REWARD \
+      -p negative_reward:=$NEGATIVE_REWARD&
     AGENT_PIDS+=($!)
   done
 
