@@ -30,6 +30,7 @@ setup(
             'cbm_population_agent_online = cbm_pop.cbm_population_agent_online:main',
             'cbm_population_agent_online_simple_simulation = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation:main',
             'cbm_population_agent_online_simple_simulation_lock = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_lock:main',
+            'cbm_population_agent_online_simple_simulation_nash = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_nash:main',
             'simple_simulator = cbm_pop.SimpleSimulator.simple_simulator:main',
             'simulator_robot = cbm_pop.SimpleSimulator.simulator_robot:main',
             'cbm_population_agent_offline = cbm_pop.cbm_population_agent_offline:main',
