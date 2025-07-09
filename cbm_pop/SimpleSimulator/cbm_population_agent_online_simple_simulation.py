@@ -22,7 +22,7 @@ from std_msgs.msg import String, Float32
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 import threading
-from cbm_pop_interfaces.msg import Solution, Weights, EnvironmentalRepresentation, SimplePosition, FinishedCoverage
+from cbm_pop_interfaces.msg import Solution, Weights, EnvironmentalRepresentation, SimplePosition, FinishedCoverage, CurrentTask, CumulativeReward
 from enum import Enum
 from math import radians, cos, sin, asin, sqrt
 from std_msgs.msg import Bool
@@ -36,19 +36,18 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_iterations,
                  num_solution_attempts, agent_id, node_name: str, learning_method,
-                 lr = 0.5,
-                 gamma_decay = 0.99,
-                 positive_reward = 1,
-                 negative_reward = -0.5,
-                 num_tsp_agents = 10):
+                 lr=0.5,
+                 gamma_decay=0.99,
+                 positive_reward=1.0,
+                 negative_reward=-0.5,
+                 num_tsp_agents=10):
 
         """
         Initialises the agent on startup
         """
         super().__init__(node_name)
-        self.current_task = None
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
 
+        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
         self.pop_size = pop_size
@@ -93,6 +92,9 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.best_local_improved = False
 
         # Runtime data
+        self.current_task = None
+        self.current_tasks = [-1] * self.num_tsp_agents
+
         self.initial_robot_poses = [None] * self.num_tsp_agents
         self.robot_poses = [None] * self.num_tsp_agents
         self.current_solution = None
@@ -198,6 +200,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             10
         )
 
+        self.cumulative_reward_publisher = self.create_publisher(
+            CumulativeReward,
+            "/cumulative_reward",
+            10
+        )
+
         self.environmental_representation_timer = self.create_timer(2, self.environmental_representation_timer_callback,
                                                                     callback_group=self.cb_group)
 
@@ -214,6 +222,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.gamma_decay = gamma_decay  # it can be change interms of iteration
         self.positive_reward = positive_reward
         self.negative_reward = negative_reward
+        self.cumulative_reward = 0
 
         self.run_timer = None
         self.is_loop_started = False
@@ -669,6 +678,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 self.reward = 1
             else:
                 self.reward = -0.5
+
+            self.cumulative_reward += self.reward
+            msg = CumulativeReward()
+            msg.agent_id = self.agent_ID
+            msg.cumulative_reward = float(self.cumulative_reward)
+            self.cumulative_reward_publisher.publish(msg)
 
             updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
             updated_q = max(updated_q, 1e-6)
