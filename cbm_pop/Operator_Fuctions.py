@@ -135,6 +135,88 @@ class OperatorFunctions:
         return op
 
     @staticmethod
+    def choose_operator_pm_annealed(
+            weights,
+            condition,
+            *,
+            step: int,
+            anneal_horizon: int = 2000,
+            T0: float = 1.5,  # start slightly exploratory around PM
+            T1: float = 1.0,  # end at pure PM (set <1 for greedier-than-PM)
+            mask=None,  # optional multiplicative mask per operator
+            epsilon: float = 1e-12,  # tiny floor so log(w) is defined
+            rng: "np.random.Generator | None" = None,
+            return_debug: bool = False
+    ):
+        """
+        Probability-Matching with temperature annealing.
+
+        At T=1:      p_i ∝ w_i          (classic probability matching)
+        At T<1:      p_i ∝ w_i^(1/T)    (sharper than PM, more exploitative)
+        At T>1:      p_i ∝ w_i^(1/T)    (flatter than PM, more exploratory)
+
+        Args mirror `choose_operator_annealed`, but this operates in log-space to
+        preserve PM at T=1 and improve numerical stability.
+        """
+
+        def _to_index(x) -> int:
+            if hasattr(x, "value"):  # Enum instance
+                x = x.value
+            if isinstance(x, type) and hasattr(x, "__members__"):
+                raise TypeError("condition should be an Enum *instance*, not the Enum class")
+            if isinstance(x, np.generic):
+                return int(x)
+            if isinstance(x, bool):
+                return int(x)
+            if isinstance(x, (int, np.integer)):
+                return int(x)
+            raise TypeError(f"condition index must be int-like, got {type(x).__name__}: {x!r}")
+
+        cond_idx = _to_index(condition)
+
+        row = np.asarray(weights[cond_idx], dtype=float)
+        operators = list(Operator)
+
+        if row.shape[0] != len(operators):
+            raise ValueError(
+                f"Weight row has length {row.shape[0]} but there are {len(operators)} operators. "
+                "Ensure weight columns match Operator enum size/order."
+            )
+
+        # Optional gating
+        if mask is not None:
+            m = np.asarray(mask, dtype=float)
+            if m.shape != row.shape:
+                raise ValueError("mask length must match number of operators")
+            row = row * m
+
+        # Sanitize and floor so log is defined
+        row = np.where(np.isfinite(row), row, 0.0)
+        row = np.maximum(row, epsilon)
+
+        # Temperature schedule (linear)
+        progress = min(1.0, float(step) / float(max(1, anneal_horizon)))
+        T = T0 + (T1 - T0) * progress
+        T = max(T, 1e-6)
+
+        # PM-compatible softmax: logits = log(w)/T
+        logits = np.log(row) / T
+        logits -= logits.max()  # numerical stability
+        exp = np.exp(logits)
+        Z = exp.sum()
+        probs = exp / Z if (np.isfinite(Z) and Z > 0.0) else np.full_like(exp, 1.0 / exp.size)
+
+        # Sample
+        if rng is None:
+            rng = np.random.default_rng()
+        idx = int(rng.choice(len(probs), p=probs))
+        op = operators[idx]
+
+        if return_debug:
+            return op, probs.tolist(), T
+        return op
+
+    @staticmethod
     def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None,
                  inital_robot_cost_matrix=None):
         """
