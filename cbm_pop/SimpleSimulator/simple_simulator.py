@@ -115,8 +115,8 @@ def main():
 
     rclpy.init(args=sys.argv)
 
-    tasks = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
-    env_bounds = [0, 10, 0, 10]
+    tasks = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
+    env_bounds = [0, 15, 0, 15]
     xmin, xmax, ymin, ymax = env_bounds
 
     starts = [[(np.random.uniform(xmin, xmax), np.random.uniform(ymin, ymax))] for _ in range(args.num_robots)]

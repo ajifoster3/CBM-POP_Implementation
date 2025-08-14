@@ -1,6 +1,8 @@
 import random
 from copy import deepcopy
 from enum import Enum
+import numpy as np
+
 from cbm_pop.Fitness import Fitness
 from cbm_pop.Operator import Operator
 
@@ -47,6 +49,90 @@ class OperatorFunctions:
         # Randomly select an operator based on weights in `row`
         chosen_operator = random.choices(operators, weights=row, k=1)[0]
         return chosen_operator
+
+    @staticmethod
+    def choose_operator_annealed(
+            weights,
+            condition,
+            *,
+            step: int,
+            anneal_horizon: int = 200,
+            T0: float = 2.0,
+            T1: float = 0.4,
+            mask=None,  # optional multiplicative mask (e.g., classic gating)
+            epsilon: float = 1e-6,  # tiny floor so ops never die completely
+            rng: "np.random.Generator | None" = None,
+            return_debug: bool = False
+    ):
+        """
+        Pick an operator with softmax over weights at temperature T(step).
+
+        T(step) = T0 + (T1 - T0) * min(1, step / anneal_horizon).
+        """
+
+        def _to_index(x) -> int:
+            # Handle Enum instances and classes, numpy scalar ints, and plain ints.
+            if hasattr(x, "value"):  # Enum instance
+                x = x.value
+            # If someone passed the Enum *class* by accident, fail loudly.
+            if isinstance(x, type) and hasattr(x, "__members__"):
+                raise TypeError("condition should be an instance (e.g., Condition.FOO), not the Enum class")
+            # NumPy scalar to Python int (also handles np.int64, etc.)
+            if isinstance(x, np.generic):
+                return int(x)
+            if isinstance(x, bool):
+                return int(x)
+            if isinstance(x, (int, np.integer)):
+                return int(x)
+            raise TypeError(f"condition index must be int-like, got {type(x).__name__}: {x!r}")
+
+        cond_idx = _to_index(condition)
+
+        row = np.asarray(weights[cond_idx], dtype=float)
+        operators = list(Operator)
+
+        if row.shape[0] != len(operators):
+            raise ValueError(
+                f"Weight row has length {row.shape[0]} but there are {len(operators)} operators. "
+                "Ensure your weight matrix columns match Operator enum size/order."
+            )
+
+        # Optional gating mask
+        if mask is not None:
+            m = np.asarray(mask, dtype=float)
+            if m.shape != row.shape:
+                raise ValueError("mask length must match number of operators")
+            row = row * m
+
+        # Replace non-finite with 0, then apply tiny floor so nothing is exactly zero
+        row = np.where(np.isfinite(row), row, 0.0)
+        row = np.maximum(row, epsilon)
+
+        # Temperature schedule
+        progress = min(1.0, float(step) / float(max(1, anneal_horizon)))
+        T = T0 + (T1 - T0) * progress
+        T = max(T, 1e-6)
+
+        # Stable softmax on row/T
+        logits = row / T
+        logits -= logits.max()
+        exp = np.exp(logits)
+        Z = exp.sum()
+        # Guard against degenerate cases (shouldn't happen after epsilon + stability, but cheap)
+        if not np.isfinite(Z) or Z <= 0.0:
+            probs = np.full_like(exp, 1.0 / exp.size)
+        else:
+            probs = exp / Z
+
+        # Sample
+        if rng is None:
+            rng = np.random.default_rng()
+        idx = int(rng.choice(len(probs), p=probs))
+        op = operators[idx]
+
+        if return_debug:
+            return op, probs.tolist(), T
+        return op
 
     @staticmethod
     def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None,

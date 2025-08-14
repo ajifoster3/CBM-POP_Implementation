@@ -20,6 +20,7 @@ class WeightMatrix:
         c4: 0 0 1 1 1 1 1 <- If all intensification operators haven't improved the solution, which diversificator to use
         :return: A weight matrix mapping conditions to operations
         """
+        print("Initialising Classical Weight Matrix")
         # Initialize and return a weight matrix (for operator selection, if needed)
         weight_matrix = []
         initial_diversifier_condition_row = [0] * self.num_intensifiers + [1] * self.num_diversifiers
@@ -45,6 +46,7 @@ class WeightMatrix:
         c4: 0 0 1 1 1 1 1 <- If all intensification operators haven't improved the solution, which diversificator to use
         :return: A weight matrix mapping conditions to operations
         """
+        print("Initialising Novel Weight Matrix")
         # Initialize and return a weight matrix (for operator selection, if needed)
         weight_matrix = []
         initial_diversifier_condition_row = [1] * (self.num_diversifiers + self.num_intensifiers)

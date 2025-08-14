@@ -36,7 +36,7 @@ class SimulatorRobot(Node):
         )
 
         # Create a timer to tick every 0.1 seconds (10 Hz)
-        self.timer_period = 2  # seconds
+        self.timer_period = 0.5  # seconds
         self.timer = self.create_timer(self.timer_period, self.publish_position)
 
     def move_robot(self):
