@@ -53,7 +53,9 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
         """
         super().__init__(node_name)
 
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
+        print(f"Intiialising agent with parameters: lr {lr}, gamma_decay {gamma_decay}, positive reward {positive_reward}, negative reward: {negative_reward}")
+
+        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
         self.pop_size = pop_size
@@ -117,6 +119,7 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
         self.ros_timer = None
         self.agent_timeouts = [False] * self.num_tsp_agents
         self.finished_robots = [False] * self.num_tsp_agents
+        self.shutdown_timer = None
 
         self.cb_group = ReentrantCallbackGroup()
         self.me_cb_group = MutuallyExclusiveCallbackGroup()
@@ -680,6 +683,8 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
             # Current Q value
             current_q = self.weight_matrix.weights[condition.value][operator.value - 1]
 
+            max_next_q = 0
+
             # Determine next condition
             if i + 1 < len(self.previous_experience):
                 next_condition = self.previous_experience[i + 1][
@@ -687,9 +692,6 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                 max_next_q = max(self.weight_matrix.weights[next_condition.value])  # Best future Q-value
             else:
                 max_next_q = 0  # No future state, assume no future reward
-
-            # Estimate future rewards (single-step Q-learning)
-            max_next_q = max(self.weight_matrix.weights[condition.value])
 
             if self.best_local_improved:
                 self.reward = 1
@@ -784,11 +786,18 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
         if all(self.finished_robots):
             print("Coverage Complete")
-            self.destroy_node()  # Stop this node
 
-            # Shutdown ROS2 system
-            rclpy.shutdown()  # This ensures that ROS2 itself is properly shut down
-            print("ROS2 system shut down.")
+            # Start a timer to delay shutdown by 5 seconds
+            if self.shutdown_timer is None:
+                self.shutdown_timer = self.create_timer(
+                    5.0,  # delay in seconds
+                    self.delayed_shutdown
+                )
+
+    def delayed_shutdown(self):
+        print("Shutting down after 5-second delay.")
+        self.destroy_node()
+        rclpy.shutdown()
 
 
     def solution_update_callback(self, msg):
@@ -912,7 +921,7 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                 distance = math.sqrt(((x - goal_x) ** 2)+((y - goal_y) ** 2))
 
                 if agent == self.true_agent_ID and distance < 0.4:
-                    print(f"[INFO] Agent {self.agent_ID} finished coverage!.")
+                    #print(f"[INFO] Agent {self.agent_ID} finished coverage!.")
                     msg = FinishedCoverage()
                     msg.finished = True
                     msg.robot_id = self.agent_ID
@@ -1211,7 +1220,7 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                         [self.robot_cost_matrix[i] for i, purged in enumerate(self.purged_agents) if not purged],
                         self.robot_initial_pose_cost_matrix
                     ),
-                    timeout=5.0  # seconds, adjust as needed
+                    timeout=20.0  # seconds, adjust as needed
                 )
                 if c_new is None:
                     print(f"[TIMEOUT] Operator {operator} took too long. Skipping this step.")
@@ -1273,8 +1282,8 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                 self.di_cycle_count += 1
 
                 condition = ConditionFunctions.perceive_condition(self.previous_experience)
-                if condition == Condition.C_4:
-                    print("*********************** Im Condition C4 ***********************")
+                #if condition == Condition.C_4:
+                    #print("*********************** Im Condition C4 ***********************")
                 if self.end_of_di_cycle(self.di_cycle_count) or condition == Condition.C_4:
 
                     learning_method_switch = {

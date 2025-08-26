@@ -47,7 +47,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         """
         super().__init__(node_name)
         self.current_task = None
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
+        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
 
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
@@ -618,6 +618,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
             # Get elements before index_best_fitness
         elements_before_best = self.previous_experience[:index_best_fitness + 1] if index_best_fitness != -1 else []
+        elements_before_best = self.previous_experience[:index_best_fitness + 1] if index_best_fitness != -1 else []
         condition_operator_pairs = [(item[0], item[1]) for item in elements_before_best]
         condition_operator_pairs = list(set(condition_operator_pairs))
         for pair in condition_operator_pairs:
@@ -661,9 +662,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 max_next_q = max(self.weight_matrix.weights[next_condition.value])  # Best future Q-value
             else:
                 max_next_q = 0  # No future state, assume no future reward
-
-            # Estimate future rewards (single-step Q-learning)
-            max_next_q = max(self.weight_matrix.weights[condition.value])
 
             if self.best_local_improved:
                 self.reward = 1
@@ -1286,11 +1284,21 @@ def main(args=None):
     temp_node.declare_parameter("agent_id", 1)
     temp_node.declare_parameter("runtime", -1.0)
     temp_node.declare_parameter("learning_method", "Ferreira et al.")
-    temp_node.declare_parameter("num_tsp_agents", 5)
+
+    temp_node.declare_parameter("lr", 0.5)
+    temp_node.declare_parameter("gamma_decay", 0.99)
+    temp_node.declare_parameter("positive_reward", 1.0)
+    temp_node.declare_parameter("negative_reward", -0.5)
+    temp_node.declare_parameter("num_tsp_agents", 10)
 
     agent_id = temp_node.get_parameter("agent_id").value
     runtime = temp_node.get_parameter("runtime").value
     learning_method = temp_node.get_parameter("learning_method").value
+
+    lr = temp_node.get_parameter("lr").value
+    gamma_decay = temp_node.get_parameter("gamma_decay").value
+    positive_reward = temp_node.get_parameter("positive_reward").value
+    negative_reward = temp_node.get_parameter("negative_reward").value
     num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
     temp_node.destroy_node()
 
@@ -1298,7 +1306,8 @@ def main(args=None):
     agent = CBMPopulationAgentOnlineSimpleSimulation(
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_iterations=9999999, num_solution_attempts=21, agent_id=agent_id,
-        node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents
+        node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents, lr=lr,
+        gamma_decay=gamma_decay, positive_reward=positive_reward, negative_reward=negative_reward
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 

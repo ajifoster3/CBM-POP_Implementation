@@ -75,7 +75,7 @@ sweep_by_name() {
 # Config
 ########################################
 NUM_AGENTS=10
-NUM_RUNS=25
+NUM_RUNS=100
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
 AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation_offline"
@@ -83,7 +83,7 @@ SIM_EXECUTABLE="simple_simulator"
 TRACKER_PATTERN="tracker"   # adjust if your tracker binary has a different name
 
 RUNTIME=-1.0
-LEARNING_METHOD="Q-Learning"
+LEARNING_METHOD="Ferreira_et_al." #Q-Learning  Ferreira_et_al.
 RUN_DURATION_SECONDS=60
 
 RESULTS_ROOT="resources/run_logs"
@@ -98,10 +98,10 @@ SWEEP_PATTERNS=(
 )
 
 # Parameter values
-LR_VALUES=(0.2)
-POSITIVE_REWARD_VALUES=(1)
-NEGATIVE_REWARD_VALUES=(-0.5)
-GAMMA_DECAYS=(0.2)
+LR_VALUES=(-1.0)
+POSITIVE_REWARD_VALUES=(-1.0)
+NEGATIVE_REWARD_VALUES=(-1.0)
+GAMMA_DECAYS=(-1.0)
 
 ########################################
 # Cleanup on exit/Ctrl-C

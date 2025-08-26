@@ -4,23 +4,23 @@ source ../../../../install/local_setup.bash
 
 # Configuration
 NUM_AGENTS=10
-NUM_RUNS=50
+NUM_RUNS=1
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
 AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation_lock"
 SIM_EXECUTABLE="simple_simulator"
 RUNTIME=-1.0
-LEARNING_METHOD="Q-Learning"
+LEARNING_METHOD="Ferreira_et_al." #Q-Learning - Ferreira_et_al.
 TIMEOUT_SECONDS=300  # 5 minutes
 
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 
 # Grid: 4 values for each
-LR_VALUES=(0.1 0.01 0.001)
-POSITIVE_REWARD_VALUES=(1.0 3.0)
-NEGATIVE_REWARD_VALUES=(-0.25 -2.0)
-GAMMA_DECAYS=(0.2 0.3 0.4 0.5)
+LR_VALUES=(0.5)
+POSITIVE_REWARD_VALUES=(1.0)
+NEGATIVE_REWARD_VALUES=(-0.5)
+GAMMA_DECAYS=(0.25)
 
 for GAMMA_DECAY in "${GAMMA_DECAYS[@]}"; do
   for LR in "${LR_VALUES[@]}"; do

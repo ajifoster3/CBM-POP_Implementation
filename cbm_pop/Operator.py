@@ -2,6 +2,7 @@ from enum import Enum
 
 class Operator(Enum):
     TWO_SWAP = 1
+    #ONE_MOVE_GRASP = 2
     ONE_MOVE = 2
     BEST_COST_ROUTE_CROSSOVER = 3
     INTRA_DEPOT_REMOVAL = 4

@@ -26,7 +26,7 @@ from cbm_pop_interfaces.msg import Solution, Weights, EnvironmentalRepresentatio
 from enum import Enum
 from math import radians, cos, sin, asin, sqrt
 from std_msgs.msg import Bool
-import nashpy
+import nashpy as nash
 
 class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
@@ -224,7 +224,6 @@ class CBMPopulationAgentOnlineSimpleSimulationNash(Node):
         self.positive_reward = positive_reward
         self.negative_reward = negative_reward
         self.cumulative_reward = 0
-
         self.run_timer = None
         self.is_loop_started = False
         self.task_covered = -1
@@ -574,13 +573,7 @@ class CBMPopulationAgentOnlineSimpleSimulationNash(Node):
 
             if solution[1][self.agent_ID] != 0:
                 # Compute the start index for the given robot
-                start_index = sum(solution[1][:self.agent_ID])
-
-                # Get the number of tasks assigned to the robot
-                num_tasks = solution[1][self.agent_ID]
-
-                # Extract the tasks assigned to the robot
-                agent_tasks = solution[0][start_index:start_index + num_tasks]
+                agent_tasks = self.get_robots_tasks(self.agent_ID, solution)
 
                 # Find the first uncovered task
                 for task in agent_tasks:
@@ -594,6 +587,26 @@ class CBMPopulationAgentOnlineSimpleSimulationNash(Node):
                 self.current_task = None
         except Exception:
             print(f"Agent: {self.agent_ID} has {Exception} while assigning tasks.")
+
+    def get_robots_tasks(self, agent_ID, solution):
+        start_index = sum(solution[1][:agent_ID])
+        # Get the number of tasks assigned to the robot
+        num_tasks = solution[1][agent_ID]
+        # Extract the tasks assigned to the robot
+        agent_tasks = solution[0][start_index:start_index + num_tasks]
+        return agent_tasks
+
+    def get_all_robot_tasks(self, solution):
+        all_tasks = []
+        start_index = 0
+        task_counts = solution[1]  # list of number of tasks assigned to each agent
+
+        for num_tasks in task_counts:
+            agent_tasks = solution[0][start_index:start_index + num_tasks]
+            all_tasks.append(agent_tasks)
+            start_index += num_tasks
+
+        return all_tasks
 
     def select_solution(self):
         """
@@ -791,8 +804,118 @@ class CBMPopulationAgentOnlineSimpleSimulationNash(Node):
                 # If the received solution is better, update the coalition best solution
                 if their_solution_fitness < our_solution_fitness:
                     #print(f"recieved a better solution: their fitness: {their_solution_fitness}, out fitness: {our_solution_fitness}")
+
+                    # if this robot's task has changed, start a game.
+                    # TODO: This should also be done for if this robot found the solution...
+                    new_first_task = self.get_robots_tasks(self.agent_ID, received_solution)
+                    # if this robots next task has changed start a game (with the robot newly assigned its old current task)
+                    if new_first_task != self.current_task:
+                        self.start_reallocation_game(received_solution)
+
                     self.set_coalition_best_solution(received_solution)
                     self.coalition_best_agent = msg.id
+
+    def start_reallocation_game(self, new_solution):
+        new_tasks = self.get_all_robot_tasks(new_solution)
+        new_task = new_tasks[self.agent_ID][0]
+        old_task = self.current_task
+        # Which robot is meant to take over the old task
+        takeover_robot_id = None
+        other_agents_task_position = None
+        for robot_id, task_list in enumerate(new_tasks):
+            if old_task in task_list:
+                takeover_robot_id = robot_id
+                other_agents_task_position = task_list.index(old_task)
+                break
+        if takeover_robot_id is not None:
+            print(f"Robot {takeover_robot_id} is now assigned to the agent {self.agent_ID}'s old task {old_task}.")
+        else:
+            print(f"No robot is currently assigned to the old task {old_task}.")
+            return
+
+        other_robot_next_task = new_tasks[takeover_robot_id]
+
+        print("Starting Reallocation game.")
+
+        # TODO: Make parameters
+        complience_reward = 5
+        base_task_reward = 5
+        try:
+            this_agent_travel_cost = self.calculate_travel_cost(self.agent_ID, old_task, new_task) # This is the cost of defecting an going to the replaced task before the next task.
+            other_agent_travel_cost = self.calculate_travel_cost(takeover_robot_id, old_task, other_robot_next_task) # This is the cost of cooperating and visiting the new point rather than conceding it.
+        except Exception as e:
+            error_message = (
+                f"[ERROR] Exception in calculate_travel_cost:\n"
+                f"    Error Type: {type(e).__name__}\n"
+                f"    Error Message: {e}\n"
+                f"    Stack Trace:\n{traceback.format_exc()}"
+            )
+            print(error_message)
+        temporal_discount_factor = 0.5
+        temporal_value = temporal_discount_factor ** other_agents_task_position
+        neglection_penalty = 5
+        conflict_penalty = 20
+
+        # Payoff Matrices (2x2)
+        A = np.zeros((2, 2))  # this_agent
+        B = np.zeros((2, 2))  # other_agent
+
+        # (C, C): This robot accepts the reassigned task, the other robot accepts it's new task
+        # Agent 1 does as it's told, getting a complience reward
+        A[0, 0] = complience_reward
+        # Agent 2 does as it's cold, getting a complience rewards as well as the (temporally decayed) reward for the
+        # task, but accepting the cost of travelling to the new task
+        B[0, 0] = complience_reward + (base_task_reward) * temporal_value - other_agent_travel_cost if other_agents_task_position == 0 else 0
+
+        # (C, D): both robots neglect the task, this has no effect if not the first task for other agent
+        # Agent 1 does as it's told, getting a complience reward, but also a neglect penalty if the task is the other robots next task
+        A[0, 1] = complience_reward - (neglection_penalty if other_agents_task_position == 0 else 0)
+        # Agent 2 defects, and recieves a neglection penalty if its the agents next task.
+        B[0, 1] = -neglection_penalty if other_agents_task_position == 0 else 0
+
+        # (D, C): This agent keeps it's previous task by defecting
+        # Agent 1 defects, recieving the task reward, but recieves a travel cost and a temporally decayed conflict penalty
+        A[1, 0] = base_task_reward - this_agent_travel_cost - (-conflict_penalty * temporal_value)
+        # Agent 2 does as it's told,
+        B[1, 0] = (complience_reward + base_task_reward - other_agent_travel_cost if other_agents_task_position == 0 else 0 - conflict_penalty) * temporal_value
+
+        # (D, D)
+        A[1, 1] = base_task_reward - this_agent_travel_cost
+        B[1, 1] = 0
+
+        # Build Nashpy Game
+        game = nash.Game(A, B)
+
+        print("\nPayoff Matrix A (this_agent):")
+        print(A)
+        print("\nPayoff Matrix B (other_agent):")
+        print(B)
+
+        # Compute Nash Equilibria
+        equilibria = list(game.support_enumeration())
+        s = "Nash Equilibria:{"
+        for eq in equilibria:
+            s+= f"this_agent: {eq[0]}, other_agent: {eq[1]}"+"}"
+        print(s)
+
+
+        this_robot_task_list = new_tasks[self.agent_ID]
+        takeover_robot_task_list = new_tasks[takeover_robot_id]
+
+        base_reward = 5
+
+    def calculate_travel_cost(self, agent_id, target, next_task):
+
+        direct_cost = 0
+        direct_cost += self.robot_cost_matrix[agent_id][next_task]
+
+        diverted_cost = 0
+        diverted_cost += self.robot_cost_matrix[agent_id][target]
+        diverted_cost += self.cost_matrix[target][next_task]
+
+        return diverted_cost-direct_cost
+
+
 
     def remove_extra_tasks(self, solution, target_task_count):
         """

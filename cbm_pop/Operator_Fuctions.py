@@ -1,3 +1,4 @@
+import math
 import random
 from copy import deepcopy
 from enum import Enum
@@ -18,6 +19,12 @@ class OperatorFunctions:
             current_solution,
             cost_matrix,
             robot_cost_matrix, inital_robot_cost_matrix),
+        #Operator.ONE_MOVE_GRASP: lambda current_solution, cost_matrix, robot_cost_matrix,
+        #                          inital_robot_cost_matrix, grasp_alpha: OperatorFunctions.one_move_grasp(
+        #    current_solution,
+        #    cost_matrix,
+        #    robot_cost_matrix, inital_robot_cost_matrix,
+        #    alpha=grasp_alpha),
         Operator.BEST_COST_ROUTE_CROSSOVER: lambda current_solution,
                                                    population,
                                                    cost_matrix,
@@ -35,190 +42,55 @@ class OperatorFunctions:
 
     @staticmethod
     def choose_operator(weights, condition):
-        """
-        Stochastically choose an operator for a condition using the weights.
-        :param weights: Weights
-        :param condition: Current condition
-        :return: The chosen operator
-        """
         # Choose an operator (e.g., mutation, crossover) based on weight matrix W and current state
         # For simplicity, we only apply a mutation operator in this example
         row = weights[condition.value]
         operators = list(Operator)
-
         # Randomly select an operator based on weights in `row`
         chosen_operator = random.choices(operators, weights=row, k=1)[0]
         return chosen_operator
 
     @staticmethod
-    def choose_operator_annealed(
-            weights,
-            condition,
-            *,
-            step: int,
-            anneal_horizon: int = 200,
-            T0: float = 2.0,
-            T1: float = 0.4,
-            mask=None,  # optional multiplicative mask (e.g., classic gating)
-            epsilon: float = 1e-6,  # tiny floor so ops never die completely
-            rng: "np.random.Generator | None" = None,
-            return_debug: bool = False
-    ):
-        """
-        Pick an operator with softmax over weights at temperature T(step).
-
-        T(step) = T0 + (T1 - T0) * min(1, step / anneal_horizon).
-        """
-
-        def _to_index(x) -> int:
-            # Handle Enum instances and classes, numpy scalar ints, and plain ints.
-            if hasattr(x, "value"):  # Enum instance
-                x = x.value
-            # If someone passed the Enum *class* by accident, fail loudly.
-            if isinstance(x, type) and hasattr(x, "__members__"):
-                raise TypeError("condition should be an instance (e.g., Condition.FOO), not the Enum class")
-            # NumPy scalar to Python int (also handles np.int64, etc.)
-            if isinstance(x, np.generic):
-                return int(x)
-            if isinstance(x, bool):
-                return int(x)
-            if isinstance(x, (int, np.integer)):
-                return int(x)
-            raise TypeError(f"condition index must be int-like, got {type(x).__name__}: {x!r}")
-
-        cond_idx = _to_index(condition)
-
-        row = np.asarray(weights[cond_idx], dtype=float)
+    def choose_operator_ucb(weights, condition, operator_usage_counts, exploration_constant: float = 1.0):
+        # Resolve the row index from the condition; support Enum or numeric types
+        cond_idx = condition.value if hasattr(condition, 'value') else int(condition)
+        row = weights[cond_idx]
         operators = list(Operator)
 
-        if row.shape[0] != len(operators):
-            raise ValueError(
-                f"Weight row has length {row.shape[0]} but there are {len(operators)} operators. "
-                "Ensure your weight matrix columns match Operator enum size/order."
-            )
+        # Initialise counts for unseen operators
+        for op in operators:
+            operator_usage_counts.setdefault(op, 0)
 
-        # Optional gating mask
-        if mask is not None:
-            m = np.asarray(mask, dtype=float)
-            if m.shape != row.shape:
-                raise ValueError("mask length must match number of operators")
-            row = row * m
+        total_usage = sum(operator_usage_counts.values())
 
-        # Replace non-finite with 0, then apply tiny floor so nothing is exactly zero
-        row = np.where(np.isfinite(row), row, 0.0)
-        row = np.maximum(row, epsilon)
+        # If no operator has been used yet, fall back to uniform random choice
+        if total_usage == 0:
+            return random.choice(operators)
 
-        # Temperature schedule
-        progress = min(1.0, float(step) / float(max(1, anneal_horizon)))
-        T = T0 + (T1 - T0) * progress
-        T = max(T, 1e-6)
+        ucb_scores = []
+        for idx, op in enumerate(operators):
+            avg_reward = row[idx]
+            count = operator_usage_counts[op]
 
-        # Stable softmax on row/T
-        logits = row / T
-        logits -= logits.max()
-        exp = np.exp(logits)
-        Z = exp.sum()
-        # Guard against degenerate cases (shouldn't happen after epsilon + stability, but cheap)
-        if not np.isfinite(Z) or Z <= 0.0:
-            probs = np.full_like(exp, 1.0 / exp.size)
-        else:
-            probs = exp / Z
+            if avg_reward == 0.0:
+                # Force score to zero if weight is zero
+                score = 0
+            else:
+                # Normal UCB calculation
+                if count == 0:
+                    bonus = float('inf')
+                else:
+                    bonus = exploration_constant * math.sqrt(math.log(total_usage) / count)
+                score = avg_reward + bonus
 
-        # Sample
-        if rng is None:
-            rng = np.random.default_rng()
-        idx = int(rng.choice(len(probs), p=probs))
-        op = operators[idx]
+            ucb_scores.append(score)
 
-        if return_debug:
-            return op, probs.tolist(), T
-        return op
-
-    @staticmethod
-    def choose_operator_pm_annealed(
-            weights,
-            condition,
-            *,
-            step: int,
-            anneal_horizon: int = 2000,
-            T0: float = 1.5,  # start slightly exploratory around PM
-            T1: float = 1.0,  # end at pure PM (set <1 for greedier-than-PM)
-            mask=None,  # optional multiplicative mask per operator
-            epsilon: float = 1e-12,  # tiny floor so log(w) is defined
-            rng: "np.random.Generator | None" = None,
-            return_debug: bool = False
-    ):
-        """
-        Probability-Matching with temperature annealing.
-
-        At T=1:      p_i ∝ w_i          (classic probability matching)
-        At T<1:      p_i ∝ w_i^(1/T)    (sharper than PM, more exploitative)
-        At T>1:      p_i ∝ w_i^(1/T)    (flatter than PM, more exploratory)
-
-        Args mirror `choose_operator_annealed`, but this operates in log-space to
-        preserve PM at T=1 and improve numerical stability.
-        """
-
-        def _to_index(x) -> int:
-            if hasattr(x, "value"):  # Enum instance
-                x = x.value
-            if isinstance(x, type) and hasattr(x, "__members__"):
-                raise TypeError("condition should be an Enum *instance*, not the Enum class")
-            if isinstance(x, np.generic):
-                return int(x)
-            if isinstance(x, bool):
-                return int(x)
-            if isinstance(x, (int, np.integer)):
-                return int(x)
-            raise TypeError(f"condition index must be int-like, got {type(x).__name__}: {x!r}")
-
-        cond_idx = _to_index(condition)
-
-        row = np.asarray(weights[cond_idx], dtype=float)
-        operators = list(Operator)
-
-        if row.shape[0] != len(operators):
-            raise ValueError(
-                f"Weight row has length {row.shape[0]} but there are {len(operators)} operators. "
-                "Ensure weight columns match Operator enum size/order."
-            )
-
-        # Optional gating
-        if mask is not None:
-            m = np.asarray(mask, dtype=float)
-            if m.shape != row.shape:
-                raise ValueError("mask length must match number of operators")
-            row = row * m
-
-        # Sanitize and floor so log is defined
-        row = np.where(np.isfinite(row), row, 0.0)
-        row = np.maximum(row, epsilon)
-
-        # Temperature schedule (linear)
-        progress = min(1.0, float(step) / float(max(1, anneal_horizon)))
-        T = T0 + (T1 - T0) * progress
-        T = max(T, 1e-6)
-
-        # PM-compatible softmax: logits = log(w)/T
-        logits = np.log(row) / T
-        logits -= logits.max()  # numerical stability
-        exp = np.exp(logits)
-        Z = exp.sum()
-        probs = exp / Z if (np.isfinite(Z) and Z > 0.0) else np.full_like(exp, 1.0 / exp.size)
-
-        # Sample
-        if rng is None:
-            rng = np.random.default_rng()
-        idx = int(rng.choice(len(probs), p=probs))
-        op = operators[idx]
-
-        if return_debug:
-            return op, probs.tolist(), T
-        return op
+        best_index = int(np.argmax(ucb_scores))
+        return operators[best_index]
 
     @staticmethod
     def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None,
-                 inital_robot_cost_matrix=None):
+                 inital_robot_cost_matrix=None, grasp_alpha=None):
         """
         Apply the operator to the current solution and return the newly generated child solution.
         :param cost_matrix: Cost matrix to calculate the cost
@@ -239,6 +111,14 @@ class OperatorFunctions:
                   or operator == Operator.ONE_MOVE):
                 return OperatorFunctions.operator_function_map[operator](current_copy, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
+            #elif operator == Operator.ONE_MOVE_GRASP:
+            #    return OperatorFunctions.one_move_grasp(
+            #        current_copy,
+            #        cost_matrix,
+            #        robot_cost_matrix,
+            #        inital_robot_cost_matrix,
+            #        alpha=grasp_alpha  # <<< inject adaptive alpha
+            #    )
             else:
                 return OperatorFunctions.operator_function_map[operator](current_copy)
 
@@ -297,6 +177,7 @@ class OperatorFunctions:
                                                       task, robot_cost_matrix, inital_robot_cost_matrix)
 
         # Return the modified solution as the child solution
+        print(f"new solutions: {new_solution_task_order}")
         return new_solution_task_order, new_solution_task_counts  # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
 
     @staticmethod
@@ -532,6 +413,137 @@ class OperatorFunctions:
 
             # Insert the task at the new best position
             task_order.insert(best_position, task_to_move)
+
+        return task_order, agent_task_counts
+
+    @staticmethod
+    def one_move_grasp(current_solution,
+                       cost_matrix,
+                       robot_cost_matrix,
+                       inital_robot_cost_matrix,
+                       alpha: float = 0,
+                       rng=None,
+                       task_sample_ratio: float = 1.0,
+                       position_sample_ratio: float = 1.0,
+                       allow_equal: bool = False,
+                       allow_non_improving: bool = False):
+        """
+        GRASP-style one-move relocation:
+          1) Generate candidate single-task relocations across all agents/positions.
+          2) Keep 'near-best' improving moves in an RCL (alpha controls greediness).
+          3) Pick one at random from the RCL and apply it.
+
+        Args:
+            alpha (0..1): RCL greediness. 0→purely best; 1→broad (more random).
+            rng: random generator with .random(), .shuffle(), .choice(); defaults to Python's random.
+            task_sample_ratio (0..1]: randomly subsample tasks for speed/randomness.
+            position_sample_ratio (0..1]: randomly subsample insertion positions per agent.
+            allow_equal: treat Δ=0 as acceptable improvement.
+            allow_non_improving: if no improving moves exist, build RCL from all moves (may worsen).
+
+        Returns:
+            (task_order, agent_task_counts) possibly modified; unchanged if no move selected.
+        """
+        from copy import deepcopy
+        import random
+        print("Applying one move grasp")
+        if rng is None:
+            rng = random
+
+        task_order, agent_task_counts = deepcopy(current_solution)
+
+        # Current fitness baseline
+        current_fitness = Fitness.fitness_function_robot_pose(
+            (task_order, agent_task_counts),
+            cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+        )
+
+        N = len(task_order)
+
+        # Cumulative boundaries per agent on the *current* flattened order
+        cum = [0]
+        for c in agent_task_counts:
+            cum.append(cum[-1] + c)
+
+        # Optional task subsampling
+        task_idxs = list(range(N))
+        rng.shuffle(task_idxs)
+        if 0 < task_sample_ratio < 1.0:
+            keep = max(1, int(round(task_sample_ratio * N)))
+            task_idxs = task_idxs[:keep]
+
+        candidates = []  # entries: (delta, task_index, insert_pos, new_agent, original_agent)
+
+        for t_idx in task_idxs:
+            temp_order = task_order[:]
+            removed_task = temp_order.pop(t_idx)
+
+            # Find original agent by boundaries on the original order
+            orig_agent = next(i for i in range(len(agent_task_counts))
+                              if cum[i] <= t_idx < cum[i + 1])
+
+            temp_counts = agent_task_counts[:]
+            temp_counts[orig_agent] -= 1
+
+            # New boundaries after removal
+            temp_cum = [0]
+            for c in temp_counts:
+                temp_cum.append(temp_cum[-1] + c)
+
+            for ag, cnt in enumerate(temp_counts):
+                start = temp_cum[ag]
+                end = start + cnt  # insertion allowed in [start, end]
+
+                positions = list(range(start, end + 1))
+                rng.shuffle(positions)
+                if 0 < position_sample_ratio < 1.0:
+                    keep_p = max(1, int(round(position_sample_ratio * len(positions))))
+                    positions = positions[:keep_p]
+
+                for pos in positions:
+                    order_ins = temp_order[:]
+                    order_ins.insert(pos, removed_task)
+
+                    counts_ins = temp_counts[:]
+                    counts_ins[ag] += 1
+
+                    new_fit = Fitness.fitness_function_robot_pose(
+                        (order_ins, counts_ins),
+                        cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+                    )
+                    delta = new_fit - current_fitness  # <0 improves
+
+                    # Keep all candidates; filtering to improving happens below
+                    candidates.append((delta, t_idx, pos, ag, orig_agent))
+
+        if not candidates:
+            return task_order, agent_task_counts
+
+        # Improving filter
+        if allow_equal:
+            improving = [c for c in candidates if c[0] <= 0]
+        else:
+            improving = [c for c in candidates if c[0] < 0]
+
+        pool = improving if improving else (candidates if allow_non_improving else [])
+        if not pool:
+            # No acceptable move; keep solution
+            return task_order, agent_task_counts
+
+        # Build RCL: moves with delta <= best + alpha*(worst - best)  (minimization)
+        best_delta = min(pool, key=lambda x: x[0])[0]
+        worst_delta = max(pool, key=lambda x: x[0])[0]
+        threshold = best_delta + alpha * (worst_delta - best_delta)
+        rcl = [c for c in pool if c[0] <= threshold]
+
+        # Random choice from RCL
+        delta, t_idx, pos, new_ag, orig_ag = rng.choice(rcl)
+
+        # Apply move: pop at t_idx, then insert at pos on the shortened list (same indexing logic as eval)
+        moved_task = task_order.pop(t_idx)
+        agent_task_counts[orig_ag] -= 1
+        agent_task_counts[new_ag] += 1
+        task_order.insert(pos, moved_task)
 
         return task_order, agent_task_counts
 

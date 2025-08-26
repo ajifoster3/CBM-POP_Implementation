@@ -32,21 +32,48 @@ class LearningMethod(Enum):
     Q_LEARNING = "Q-Learning"
 
 
-class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
+class PageHinkley:
+    def __init__(self, delta=0.01, lamb=2.0, min_instances=20, reset_on_change=True, clip=None):
+        self.delta, self.lamb = float(delta), float(lamb)
+        self.min_instances = int(min_instances)
+        self.reset_on_change = reset_on_change
+        self.clip = clip
+        self.n = 0
+        self.mean = 0.0
+        self.cum = 0.0
+        self.cum_min = 0.0
+
+    def reset(self):
+        self.n = 0; self.mean = 0.0; self.cum = 0.0; self.cum_min = 0.0
+
+    def update(self, x: float) -> bool:
+        if self.clip is not None:
+            x = max(min(x, self.clip), -self.clip)
+        self.n += 1
+        self.mean += (x - self.mean) / self.n
+        self.cum += (x - self.mean) - self.delta
+        self.cum_min = min(self.cum_min, self.cum)
+        if self.n >= self.min_instances and (self.cum - self.cum_min) > self.lamb:
+            if self.reset_on_change:
+                self.reset()
+            return True
+        return False
+
+class CBMPopulationAgentOnlineSimpleSimulationOfflineUCB(Node):
 
     def __init__(self, pop_size, eta, rho, di_cycle_length, epsilon, num_iterations,
                  num_solution_attempts, agent_id, node_name: str, learning_method,
                  lr = 0.5,
                  gamma_decay = 0.99,
                  positive_reward = 1,
-                 negative_reward = -0.5,
+                 negative_reward = 0,
                  num_tsp_agents = 10):
 
         """
         Initialises the agent on startup
         """
         super().__init__(node_name)
-        print("Initialising Agent")
+        print("Initialising UCB Agent")
         # Print directly from arguments
         settings_str = f"""
             ================= Agent Configuration =================
@@ -91,7 +118,10 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
         self.num_intensifiers = 2
         self.num_diversifiers = 4
         self.population = None
-        self.weight_matrix = WeightMatrix(self.num_intensifiers, self.num_diversifiers, False)
+        our_weights = False
+        self.weight_matrix = WeightMatrix(self.num_intensifiers, self.num_diversifiers, our_weights)
+        print(f"Our weights: {self.weight_matrix.weights}")
+
 
         self.previous_experience = []
         self.no_improvement_attempts = num_solution_attempts
@@ -99,9 +129,12 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
         self.true_agent_ID = self.agent_ID  # This is permanent
         self.received_weight_matrices = []
 
-        '''
+        self.operator_usage_counts = {}
+
         # temperature Annealing settings
+
         self.step_count = 0
+        '''
         self.anneal_horizon = 50
         self.T0 = 2.0
         self.T1 = 0.4
@@ -140,6 +173,17 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
         self.no_improvement_attempt_count = 0
         self.best_coalition_improved = False
         self.best_local_improved = False
+
+        self.grasp_alpha = 0.0  # start greedy (deterministic)
+        self.ph_triggered_once = False
+        self.ph_params = {
+            "delta": 0.01,
+            "lamb": 0.5,
+            "min_instances": 30,
+            "reset_on_change": True,
+            "clip": None,  # e.g., 10.0 to tame outliers
+        }
+        self.ph_detectors = {}  # (Condition, Operator) -> PageHinkley
 
         # Runtime data
         self.initial_robot_poses = [None] * self.num_tsp_agents
@@ -202,6 +246,12 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
         self.run_timer = None
         self.is_loop_started = False
         print("Agent initialised.")
+
+    def _get_ph(self, condition, operator) -> PageHinkley:
+        key = (condition, operator)
+        if key not in self.ph_detectors:
+            self.ph_detectors[key] = PageHinkley(**self.ph_params)
+        return self.ph_detectors[key]
 
     def calculate_cost_matrix(self):
         """
@@ -337,9 +387,7 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
         condition_operator_pairs = list(set(condition_operator_pairs))
         for pair in condition_operator_pairs:
             self.weight_matrix.weights[pair[0].value][pair[1].value - 1] += self.eta
-        print("Updated weight matrix:")
-        for row in self.weight_matrix.weights:
-            print("  ", row)
+
         return self.weight_matrix.weights
 
     # ----------------------------------------------------------------------------
@@ -370,6 +418,9 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
 
             # Current Q value
             current_q = self.weight_matrix.weights[condition.value][operator.value - 1]
+            if current_q == 0.0:
+                self.weight_matrix.weights[condition.value][operator.value - 1] = 0
+                break
 
             # Determine next condition
             if i + 1 < len(self.previous_experience):
@@ -548,7 +599,8 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
                     self.population,
                     self.cost_matrix,
                     self.robot_initial_pose_cost_matrix,
-                    self.robot_initial_pose_cost_matrix
+                    self.robot_initial_pose_cost_matrix,
+                    self.grasp_alpha
                 ),
                 timeout=5.0  # seconds, adjust as needed
             )
@@ -562,6 +614,31 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
             print(f"Issue with applying operator: {e}")
             print(f"New solution came out empty:\n old solution: {self.current_solution}\n"
                   f"operator applied {operator}")
+
+    def _on_concept_drift(self, condition, operator, signal_value, gain):
+        self.get_logger().warn(
+            f"[PH] Drift at (cond={condition.name}, op={operator.name}); "
+            f"signal={signal_value:.4f}, gain={gain:.4f}. Resetting matrix."
+        )
+
+        if not self.ph_triggered_once:
+            self.grasp_alpha = 0.25
+            self.ph_triggered_once = True
+            self.get_logger().info(f"[GRASP] Alpha increased to {self.grasp_alpha} after first PH drift.")
+
+        self._reset_weight_matrix_full()
+
+    def _reset_weight_matrix_full(self):
+        # Recreate a fresh matrix (or set a uniform baseline if you prefer)
+        self.weight_matrix = WeightMatrix(self.num_intensifiers, self.num_diversifiers, False)
+        self.operator_usage_counts = {}
+        self.previous_experience = []
+        self.di_cycle_count = 0
+        self.best_local_improved = False
+        self.best_coalition_improved = False
+        # (Optional) if you use boosted UCB exploration after reset:
+        # self.ucb_boost_until_step = self.iteration_count + self.ucb_boost_len
+        self.get_logger().warn("[PH] Full matrix reset applied due to drift.")
 
     def run_step(self):
         """
@@ -619,7 +696,10 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
                 return_debug=True
             )
             """
-            operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition)
+            
+            operator = OperatorFunctions.choose_operator_ucb(self.weight_matrix.weights, condition, self.operator_usage_counts, 1)
+
+            self.operator_usage_counts[operator] = self.operator_usage_counts.get(operator, 0) + 1
 
             # 4. Apply Said Operator
             c_new = self.apply_operator(operator)
@@ -657,6 +737,12 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
             gain = new_solution_fitness - current_solution_fitness
 
             self.update_experience(condition, operator, gain)
+
+            # --- Page–Hinkley drift check ---
+            performance_signal = -gain  # improvement -> positive
+            det = self._get_ph(condition, operator)
+            if det.update(performance_signal):
+                self._on_concept_drift(condition, operator, performance_signal, gain)
 
             # 8. Update Local best solution
 
@@ -806,7 +892,7 @@ def main(args=None):
     temp_node.destroy_node()
 
     node_name = f"cbm_population_agent_{agent_id}"
-    agent = CBMPopulationAgentOnlineSimpleSimulationOffline(
+    agent = CBMPopulationAgentOnlineSimpleSimulationOfflineUCB(
         pop_size=10,
         eta=0.5,
         rho=0.3,

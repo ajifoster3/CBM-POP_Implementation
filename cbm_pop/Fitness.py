@@ -168,7 +168,6 @@ class Fitness:
 
             print(error_message)
             print(f"Solution {solution}")
-            print(f"robot_cost_matrix {robot_cost_matrix}")
             return 99999999
 
     @staticmethod
