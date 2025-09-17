@@ -28,6 +28,7 @@ setup(
             'llm_interface_agent = cbm_pop.llm_interface_agent:main',
             'cbm_population_agent_online = cbm_pop.cbm_population_agent_online:main',
             'cbm_population_agent_online_simple_simulation = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation:main',
+            'cbm_population_agent_online_simple_simulation_reactive = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_reactive:main',
             'cbm_population_agent_online_simple_simulation_lock = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_lock:main',
             'cbm_population_agent_online_simple_simulation_nash = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_nash:main',
             'cbm_population_agent_online_simple_simulation_offline = cbm_pop.SimpleSimulator.cbm_population_agent_online_simple_simulation_offline:main',

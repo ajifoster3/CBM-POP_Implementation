@@ -29,7 +29,7 @@ class TestOperatorFunctions(TestCase):
                        [9, 8, 1, 0]]
         solution_task_counts = [2, 1]
         solution_task_order = [0, 1, 3]
-        OperatorFunctions.find_best_task_position(
+        OperatorFunctions.__find_best_task_position(
             task=2,
             new_solution_task_counts=solution_task_counts,
             new_solution_task_order=solution_task_order,
@@ -44,7 +44,7 @@ class TestOperatorFunctions(TestCase):
 
         solution_task_counts = [2, 1]
         solution_task_order = [0, 1, 3]
-        OperatorFunctions.find_best_task_position(
+        OperatorFunctions.__find_best_task_position(
             task=2,
             new_solution_task_counts=solution_task_counts,
             new_solution_task_order=solution_task_order,
@@ -59,7 +59,7 @@ class TestOperatorFunctions(TestCase):
 
         solution_task_counts = [2, 1]
         solution_task_order = [0, 1, 3]
-        OperatorFunctions.find_best_task_position(
+        OperatorFunctions.__find_best_task_position(
             task=2,
             new_solution_task_counts=solution_task_counts,
             new_solution_task_order=solution_task_order,

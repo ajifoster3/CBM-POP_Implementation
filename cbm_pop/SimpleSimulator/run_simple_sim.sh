@@ -1,122 +1,479 @@
 #!/bin/bash
+
+# --- allow unset vars while sourcing ROS/your overlay ---
+set -e
+set -o pipefail
+set +u
+
 source /opt/ros/humble/setup.bash
 source ../../../../install/local_setup.bash
 
-# Configuration
-NUM_AGENTS=10
-NUM_RUNS=1
+# --- restore nounset after sourcing ---
+set -u
+
+# ===== Better diagnostics =====
+export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
+export RCUTILS_LOGGING_USE_STDOUT=1
+export RCUTILS_LOGGING_BUFFERED_STREAM=1
+export PYTHONUNBUFFERED=1
+export PYTHONFAULTHANDLER=1
+export PYTHONASYNCIODEBUG=1
+ulimit -c unlimited || true
+
+# ===== Configuration =====
+NUM_AGENTS=7
+NUM_RUNS=50
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
-AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation_lock"
+AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 RUNTIME=-1.0
-LEARNING_METHOD="Ferreira_et_al." #Q-Learning - Ferreira_et_al.
 TIMEOUT_SECONDS=300  # 5 minutes
 
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 
-# Grid: 4 values for each
+# Hyper-parameter grids
+# Q-Learning params
 LR_VALUES=(0.5)
-POSITIVE_REWARD_VALUES=(1.0)
+POSITIVE_REWARD_VALUES=(3.0)
 NEGATIVE_REWARD_VALUES=(-0.5)
-GAMMA_DECAYS=(0.25)
+GAMMA_DECAYS=(0.25 0.5)
+# ρ is used by BOTH Q-Learning (mimetism) and Ferreira
+RHO_VALUES=(0.20)
 
-for GAMMA_DECAY in "${GAMMA_DECAYS[@]}"; do
-  for LR in "${LR_VALUES[@]}"; do
-    for POSITIVE_REWARD in "${POSITIVE_REWARD_VALUES[@]}"; do
-      for NEGATIVE_REWARD in "${NEGATIVE_REWARD_VALUES[@]}"; do
+# Ferreira-only η
+ETA_VALUES=(0.05 0.10 0.20)
 
-        PARAM_DIR="$RESULTS_ROOT/gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}"
-        mkdir -p "$PARAM_DIR"
+# Booleans must be lowercase YAML to be parsed as bool
+LOCK_MODES=(false)
+PRESERVE_NEXT_TASKS=(false)
 
-        EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l)
-        START_RUN=$((EXISTING_RUNS + 1))
+# Methods to sweep
+LEARNING_METHODS=('Q-Learning')
+# LEARNING_METHODS=('Q-Learning' 'Ferreira_et_al.')
 
-        if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
-          echo "[INFO] Already completed $EXISTING_RUNS runs for gamma=$GAMMA_DECAY, lr=$LR, pos=$POSITIVE_REWARD, neg=$NEGATIVE_REWARD. Skipping."
-          continue
-        fi
+# ===== Helpers =====
+unique_id () {
+  printf "%(%Y%m%d_%H%M%S)T_%04x" -1 "$((RANDOM%65536))"
+}
 
-        run=$START_RUN
-        while [ $run -le $NUM_RUNS ]; do
-          echo "============================="
-          echo "[INFO] Starting run $run/$NUM_RUNS with gamma=$GAMMA_DECAY, lr=$LR, pos=$POSITIVE_REWARD, neg=$NEGATIVE_REWARD"
-          echo "============================="
+kill_pid_tree () {
+  local pid="$1"
+  [ -z "${pid:-}" ] && return 0
+  pkill -TERM -P "$pid" 2>/dev/null || true
+  kill -TERM "$pid" 2>/dev/null || true
+  sleep 1
+  pkill -KILL -P "$pid" 2>/dev/null || true
+  kill -KILL "$pid" 2>/dev/null || true
+}
 
-          CONFIG_DIR="$PARAM_DIR/run_${run}"
-          mkdir -p "$CONFIG_DIR"
+cleanup_run () {
+  local logger_pid="$1"; shift
+  local sim_pid="$1"; shift
+  local -a agent_pids=("$@")
+  kill_pid_tree "$logger_pid"
+  kill_pid_tree "$sim_pid"
+  local p
+  for p in "${agent_pids[@]}"; do kill_pid_tree "$p"; done
+}
 
-          # Start logger
-          ros2 run $PACKAGE_NAME $LOGGER_EXECUTABLE \
-            --ros-args -p parent_log_dir:="$CONFIG_DIR" &
-          LOGGER_PID=$!
+start_logged () {
+  local logfile="$1"; local roslogdir="$2"; shift 2
+  mkdir -p "$(dirname "$logfile")" "$roslogdir"
+  RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
+  ROS_LOG_DIR="$roslogdir" \
+  PYTHONUNBUFFERED=1 \
+  PYTHONFAULTHANDLER=1 \
+  PYTHONASYNCIODEBUG=1 \
+  stdbuf -oL -eL "$@" >>"$logfile" 2>&1 & echo $!
+}
 
-          # Start simulator
-          ros2 run $PACKAGE_NAME $SIM_EXECUTABLE --num_robots $NUM_AGENTS &
-          SIM_PID=$!
+decode_status () {
+  local status="$1"
+  if (( status > 128 )); then echo "terminated by signal $((status - 128))"
+  else echo "exited with code $status"; fi
+}
 
-          # Start agents
-          AGENT_PIDS=()
-          for ((i=0; i<NUM_AGENTS; i++)); do
-            ros2 run $PACKAGE_NAME $AGENT_EXECUTABLE \
-              --ros-args \
-              -p agent_id:=$i \
-              -p runtime:=$RUNTIME \
-              -p learning_method:="$LEARNING_METHOD" \
-              -p num_tsp_agents:=$NUM_AGENTS \
-              -p lr:=$LR \
-              -p gamma_decay:=$GAMMA_DECAY \
-              -p positive_reward:=$POSITIVE_REWARD \
-              -p negative_reward:=$NEGATIVE_REWARD &
-            AGENT_PIDS+=($!)
+check_first_dead () {
+  FIRST_DEAD_PID=""
+  local pid
+  for pid in "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; do
+    [ -z "$pid" ] && continue
+    if ! kill -0 "$pid" 2>/dev/null; then
+      FIRST_DEAD_PID="$pid"
+      return 1
+    fi
+  done
+  return 0
+}
+
+slug() {
+  local s="$1"; s="${s//[^A-Za-z0-9._-]/_}"; echo "$s";
+}
+
+write_param_tag_file () {
+  # PARAM_DIR, METHOD, LOCK, PRESERVE,
+  # [gamma lr pos neg rho if Q-Learning] OR [eta rho if Ferreira]
+  local _dir="$1"; shift
+  local _method="$1"; shift
+  local _lock="$1"; shift
+  local _preserve="$1"; shift
+
+  local line="method=${_method} lock=${_lock} preserve_next_task=${_preserve}"
+
+  if [[ "$_method" == "Q-Learning" ]]; then
+    local _gamma="$1"; local _lr="$2"; local _pos="$3"; local _neg="$4"; local _rho="$5"
+    line+=" gamma_decay=${_gamma} lr=${_lr} pos=${_pos} neg=${_neg} rho=${_rho}"
+  elif [[ "$_method" == "Ferreira_et_al." ]]; then
+    local _eta="$1"; local _rho="$2"
+    line+=" eta=${_eta} rho=${_rho}"
+  fi
+
+  echo "$line" > "$_dir/setting_tag.txt"
+}
+
+write_run_settings () {
+  # CONFIG_DIR, METHOD, LOCK, PRESERVE, RUN_INDEX,
+  # [gamma lr pos neg rho if Q-Learning] OR [eta rho if Ferreira]
+  local _cfg="$1"; shift
+  local _method="$1"; shift
+  local _lock="$1"; shift
+  local _preserve="$1"; shift
+  local _uid="$1"; shift || true
+
+  {
+    echo "method=${_method}"
+    echo "lock_mode=${_lock}"
+    echo "preserve_next_task=${_preserve}"
+    echo "num_agents=${NUM_AGENTS}"
+    echo "runtime=${RUNTIME}"
+    echo "timeout_seconds=${TIMEOUT_SECONDS}"
+    echo "package=${PACKAGE_NAME}"
+    echo "logger_exec=${LOGGER_EXECUTABLE}"
+    echo "agent_exec=${AGENT_EXECUTABLE}"
+    echo "sim_exec=${SIM_EXECUTABLE}"
+    echo "start_iso=$(date -Is)"
+
+    if [[ "$_method" == "Q-Learning" ]]; then
+      local _gamma="$1"; local _lr="$2"; local _pos="$3"; local _neg="$4"; local _rho="$5"
+      echo "gamma_decay=${_gamma}"
+      echo "lr=${_lr}"
+      echo "positive_reward=${_pos}"
+      echo "negative_reward=${_neg}"
+      echo "rho=${_rho}"
+    elif [[ "$_method" == "Ferreira_et_al." ]]; then
+      local _eta="$1"; local _rho="$2"
+      echo "eta=${_eta}"
+      echo "rho=${_rho}"
+    fi
+  } > "$_cfg/run_settings.txt"
+}
+
+declare -A PID_ROLE
+declare -A PID_LOG
+AGENT_PIDS=()
+
+start_all_processes () {
+  # $1 LOCK, $2 PRESERVE, $3 METHOD,
+  # $4..$7 QL params (LR, GAMMA, POS, NEG),
+  # $8..$9 Ferreira params (ETA, RHO),
+  # $10 RHO (shared, used by QL too)
+  local CUR_LOCK="$1"; shift
+  local CUR_PRESERVE="$1"; shift
+  local CUR_METHOD="$1"; shift
+  local CUR_LR="$1"; shift
+  local CUR_GAMMA="$1"; shift
+  local CUR_POS="$1"; shift
+  local CUR_NEG="$1"; shift
+  local CUR_ETA="$1"; shift
+  local CUR_RHO_F="$1"; shift
+  local CUR_RHO_SHARED="$1"; shift
+
+  # Logger
+  LOGGER_LOG="$CONFIG_DIR/logger.log"
+  LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
+    ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
+      --ros-args -p parent_log_dir:="'$CONFIG_DIR'" --log-level debug)
+  PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
+
+  # Simulator
+  SIM_LOG="$CONFIG_DIR/simulator.log"
+  SIM_PID=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" \
+    ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE" \
+      --num_robots "$NUM_AGENTS")
+  PID_ROLE["$SIM_PID"]="simulator"; PID_LOG["$SIM_PID"]="$SIM_LOG"
+
+  # Agents
+  AGENT_PIDS=()
+  for ((i=0; i<NUM_AGENTS; i++)); do
+    local AGENT_LOG="$CONFIG_DIR/agent_${i}.log"
+    local -a CMD=(ros2 run "$PACKAGE_NAME" "$AGENT_EXECUTABLE"
+                  --ros-args
+                  -p agent_id:="$i"
+                  -p runtime:="$RUNTIME"
+                  -p learning_method:="'${CUR_METHOD}'"
+                  -p num_tsp_agents:="$NUM_AGENTS"
+                  -p lock_mode:=${CUR_LOCK}
+                  -p preserve_next_task:=${CUR_PRESERVE}
+                  --log-level debug)
+    if [[ "$CUR_METHOD" == "Q-Learning" ]]; then
+      # Pass rho as well
+      CMD+=( -p lr:="$CUR_LR"
+             -p gamma_decay:="$CUR_GAMMA"
+             -p positive_reward:="$CUR_POS"
+             -p negative_reward:="$CUR_NEG"
+             -p rho:="$CUR_RHO_SHARED" )
+    elif [[ "$CUR_METHOD" == "Ferreira_et_al." ]]; then
+      CMD+=( -p eta:="$CUR_ETA"
+             -p rho:="$CUR_RHO_F" )
+    fi
+
+    local pid
+    pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
+    AGENT_PIDS+=("$pid")
+    PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
+  done
+}
+
+on_sigint () {
+  echo "[INTERRUPT] Cleaning up processes..."
+  cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
+  exit 130
+}
+trap on_sigint INT
+
+# ===== Main sweep =====
+for METHOD in "${LEARNING_METHODS[@]}"; do
+  METHOD_TAG="$(slug "$METHOD")"
+  for LOCK in "${LOCK_MODES[@]}"; do
+    for PRESERVE in "${PRESERVE_NEXT_TASKS[@]}"; do
+
+      if [[ "$METHOD" == "Q-Learning" ]]; then
+        for GAMMA_DECAY in "${GAMMA_DECAYS[@]}"; do
+          for LR in "${LR_VALUES[@]}"; do
+            for POSITIVE_REWARD in "${POSITIVE_REWARD_VALUES[@]}"; do
+              for NEGATIVE_REWARD in "${NEGATIVE_REWARD_VALUES[@]}"; do
+                for RHO in "${RHO_VALUES[@]}"; do
+                  PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}"
+                  mkdir -p "$PARAM_DIR"
+                  write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+
+                  EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
+                  START_RUN=$((EXISTING_RUNS + 1))
+                  if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
+                    echo "[INFO] Already completed $EXISTING_RUNS runs for $PARAM_DIR. Skipping."
+                    continue
+                  fi
+
+                  run=$START_RUN
+                  while [ $run -le $NUM_RUNS ]; do
+                    echo "============================="
+                    echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO"
+                    echo "============================="
+
+                    CONFIG_DIR="$PARAM_DIR/run_${run}"
+                    ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
+                    mkdir -p "$ROS2_LOG_DIR"
+
+                    write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+
+                    # placeholders: ETA=0, RHO_F=0 (Ferreira), RHO_SHARED=$RHO (QL)
+                    start_all_processes "$LOCK" "$PRESERVE" "$METHOD" "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" 0 0 "$RHO"
+
+                    START_TIME=$(date +%s)
+                    RUN_TIMEOUT=0
+                    FIRST_DEAD_PID=""
+
+                    while true; do
+                      sleep 2
+                      CURRENT_TIME=$(date +%s)
+                      ELAPSED=$((CURRENT_TIME - START_TIME))
+
+                      if ! check_first_dead; then
+                        role="${PID_ROLE[$FIRST_DEAD_PID]}"
+                        logf="${PID_LOG[$FIRST_DEAD_PID]}"
+                        if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
+                        echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
+                        echo "--------- last 120 lines of $logf ---------"
+                        tail -n 120 "$logf" || true
+                        echo "-------------------------------------------"
+                        break
+                      fi
+
+                      if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+                        echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
+                        RUN_TIMEOUT=1
+                        break
+                      fi
+                    done
+
+                    cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
+
+                    if [ "$RUN_TIMEOUT" -eq 1 ]; then
+                      echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
+                      rm -rf "$CONFIG_DIR"
+                      echo "[RETRY] Repeating run $run"
+                      continue
+                    fi
+
+                    echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
+                    echo "[INFO] Completed run $run for $CONFIG_DIR"
+                    run=$((run + 1))
+                  done
+                done
+              done
+            done
+          done
+        done
+
+      else
+        # Non-Q-Learning
+        if [[ "$METHOD" == "Ferreira_et_al." ]]; then
+          for ETA in "${ETA_VALUES[@]}"; do
+            for RHO in "${RHO_VALUES[@]}"; do
+              PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_eta_${ETA}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}"
+              mkdir -p "$PARAM_DIR"
+              write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$ETA" "$RHO"
+
+              EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
+              START_RUN=$((EXISTING_RUNS + 1))
+              if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
+                echo "[INFO] Already completed $EXISTING_RUNS runs for $PARAM_DIR. Skipping."
+                continue
+              fi
+
+              run=$START_RUN
+              while [ $run -le $NUM_RUNS ]; do
+                echo "============================="
+                echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE eta=${ETA} rho=${RHO}"
+                echo "============================="
+
+                CONFIG_DIR="$PARAM_DIR/run_${run}"
+                ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
+                mkdir -p "$ROS2_LOG_DIR"
+
+                write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$ETA" "$RHO"
+
+                # placeholders for QL params: LR,GAMMA,POS,NEG = 0; pass ETA,RHO and no shared rho
+                start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 "$ETA" "$RHO" 0
+
+                START_TIME=$(date +%s)
+                RUN_TIMEOUT=0
+                FIRST_DEAD_PID=""
+
+                while true; do
+                  sleep 2
+                  CURRENT_TIME=$(date +%s)
+                  ELAPSED=$((CURRENT_TIME - START_TIME))
+
+                  if ! check_first_dead; then
+                    role="${PID_ROLE[$FIRST_DEAD_PID]}"
+                    logf="${PID_LOG[$FIRST_DEAD_PID]}"
+                    if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
+                    echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
+                    echo "--------- last 120 lines of $logf ---------"
+                    tail -n 120 "$logf" || true
+                    echo "-------------------------------------------"
+                    break
+                  fi
+
+                  if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+                    echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
+                    RUN_TIMEOUT=1
+                    break
+                  fi
+                done
+
+                cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
+
+                if [ "$RUN_TIMEOUT" -eq 1 ]; then
+                  echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
+                  rm -rf "$CONFIG_DIR"
+                  echo "[RETRY] Repeating run $run"
+                  continue
+                fi
+
+                echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
+                echo "[INFO] Completed run $run for $CONFIG_DIR"
+                run=$((run + 1))
+              done
+            done
           done
 
-          # Wait with timeout
-          START_TIME=$(date +%s)
-          RUN_TIMEOUT=0
+        else
+          # Any other non-QL method without eta/rho
+          PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}"
+          mkdir -p "$PARAM_DIR"
+          write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE"
 
-          while true; do
-            sleep 5
-            RUNNING=$(ps -p $LOGGER_PID $SIM_PID "${AGENT_PIDS[@]}" > /dev/null && echo "yes" || echo "no")
-            CURRENT_TIME=$(date +%s)
-            ELAPSED=$((CURRENT_TIME - START_TIME))
-
-            if [ "$RUNNING" == "no" ]; then
-              echo "[INFO] Run $run completed in $ELAPSED seconds."
-              break
-            fi
-
-            if [ "$ELAPSED" -gt "$TIMEOUT_SECONDS" ]; then
-              echo "[WARNING] Run $run exceeded $TIMEOUT_SECONDS seconds. Killing processes and retrying..."
-              RUN_TIMEOUT=1
-              break
-            fi
-          done
-
-          # Cleanup
-          pkill -P $LOGGER_PID 2>/dev/null
-          pkill -P $SIM_PID 2>/dev/null
-          for pid in "${AGENT_PIDS[@]}"; do
-            pkill -P $pid 2>/dev/null
-          done
-          kill $LOGGER_PID $SIM_PID "${AGENT_PIDS[@]}" 2>/dev/null
-
-          if [ "$RUN_TIMEOUT" -eq 1 ]; then
-            echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
-            rm -rf "$CONFIG_DIR"
-            echo "[RETRY] Repeating run $run"
+          EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
+          START_RUN=$((EXISTING_RUNS + 1))
+          if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
+            echo "[INFO] Already completed $EXISTING_RUNS runs for $PARAM_DIR. Skipping."
             continue
           fi
 
-          echo "[INFO] Completed run $run for gamma=$GAMMA_DECAY, lr=$LR, pos=$POSITIVE_REWARD, neg=$NEGATIVE_REWARD"
-          echo
-          run=$((run + 1))
-        done
+          run=$START_RUN
+          while [ $run -le $NUM_RUNS ]; do
+            echo "============================="
+            echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE"
+            echo "============================="
 
-      done
+            CONFIG_DIR="$PARAM_DIR/run_${run}"
+            ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
+            mkdir -p "$ROS2_LOG_DIR"
+
+            write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run"
+
+            # placeholders for both families
+            start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 0 0 0
+
+            START_TIME=$(date +%s)
+            RUN_TIMEOUT=0
+            FIRST_DEAD_PID=""
+
+            while true; do
+              sleep 2
+              CURRENT_TIME=$(date +%s)
+              ELAPSED=$((CURRENT_TIME - START_TIME))
+
+              if ! check_first_dead; then
+                role="${PID_ROLE[$FIRST_DEAD_PID]}"
+                logf="${PID_LOG[$FIRST_DEAD_PID]}"
+                if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
+                echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
+                echo "--------- last 120 lines of $logf ---------"
+                tail -n 120 "$logf" || true
+                echo "-------------------------------------------"
+                break
+              fi
+
+              if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+                echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
+                RUN_TIMEOUT=1
+                break
+              fi
+            done
+
+            cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
+
+            if [ "$RUN_TIMEOUT" -eq 1 ]; then
+              echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
+              rm -rf "$CONFIG_DIR"
+              echo "[RETRY] Repeating run $run"
+              continue
+            fi
+
+            echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
+            echo "[INFO] Completed run $run for $CONFIG_DIR"
+            run=$((run + 1))
+          done
+        fi
+      fi
+
     done
   done
 done
 
-echo "[INFO] All 256 parameter settings completed or skipped if up to date."
+echo "[INFO] All parameter settings completed or skipped if up to date."

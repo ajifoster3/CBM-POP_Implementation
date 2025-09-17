@@ -38,37 +38,38 @@ class OperatorFunctions:
         Operator.SINGLE_ACTION_REROUTING: lambda current_solution, cost_matrix,
                                                  robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.single_action_rerouting(
             current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix),
+        Operator.TWO_OPT_INTRA: lambda current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix:
+        OperatorFunctions.two_opt_intra(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix,
+                                        first_improvement=False),
     }
 
     @staticmethod
-    def choose_operator(weights, condition):
+    def choose_operator(weights, condition, enabled_ops):
         # Choose an operator (e.g., mutation, crossover) based on weight matrix W and current state
         # For simplicity, we only apply a mutation operator in this example
-        row = weights[condition.value]
-        operators = list(Operator)
+        row = weights[condition]
         # Randomly select an operator based on weights in `row`
-        chosen_operator = random.choices(operators, weights=row, k=1)[0]
+        chosen_operator = random.choices(enabled_ops, weights=row, k=1)[0]
         return chosen_operator
 
     @staticmethod
-    def choose_operator_ucb(weights, condition, operator_usage_counts, exploration_constant: float = 1.0):
+    def choose_operator_ucb(weights, condition, operator_usage_counts, enabled_ops, exploration_constant: float = 1.0 ):
         # Resolve the row index from the condition; support Enum or numeric types
-        cond_idx = condition.value if hasattr(condition, 'value') else int(condition)
+        cond_idx = condition if hasattr(condition, 'value') else int(condition)
         row = weights[cond_idx]
-        operators = list(Operator)
 
         # Initialise counts for unseen operators
-        for op in operators:
+        for op in enabled_ops:
             operator_usage_counts.setdefault(op, 0)
 
         total_usage = sum(operator_usage_counts.values())
 
         # If no operator has been used yet, fall back to uniform random choice
         if total_usage == 0:
-            return random.choice(operators)
+            return random.choice(enabled_ops)
 
         ucb_scores = []
-        for idx, op in enumerate(operators):
+        for idx, op in enumerate(enabled_ops):
             avg_reward = row[idx]
             count = operator_usage_counts[op]
 
@@ -86,7 +87,7 @@ class OperatorFunctions:
             ucb_scores.append(score)
 
         best_index = int(np.argmax(ucb_scores))
-        return operators[best_index]
+        return enabled_ops[best_index]
 
     @staticmethod
     def apply_op(operator, current_solution, population, cost_matrix=None, robot_cost_matrix=None,
@@ -108,7 +109,8 @@ class OperatorFunctions:
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
             elif (operator == Operator.SINGLE_ACTION_REROUTING
                   or operator == Operator.TWO_SWAP
-                  or operator == Operator.ONE_MOVE):
+                  or operator == Operator.ONE_MOVE
+                  or operator == Operator.TWO_OPT_INTRA):
                 return OperatorFunctions.operator_function_map[operator](current_copy, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
             #elif operator == Operator.ONE_MOVE_GRASP:
@@ -173,16 +175,16 @@ class OperatorFunctions:
             temp_count_counter += 1
 
         for task in selected_path[:]:  # Use a copy of selected_path to iterate safely
-            OperatorFunctions.find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
-                                                      task, robot_cost_matrix, inital_robot_cost_matrix)
+            OperatorFunctions.__find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
+                                                        task, robot_cost_matrix, inital_robot_cost_matrix)
 
         # Return the modified solution as the child solution
-        print(f"new solutions: {new_solution_task_order}")
+        #print(f"new solutions: {new_solution_task_order}")
         return new_solution_task_order, new_solution_task_counts  # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
 
     @staticmethod
-    def find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task,
-                                robot_cost_matrix, inital_robot_cost_matrix):
+    def __find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task,
+                                  robot_cost_matrix, inital_robot_cost_matrix):
         best_fitness = float('inf')
         best_position = 0
         best_agent = 0
@@ -327,8 +329,8 @@ class OperatorFunctions:
                            sum(agent_task_counts[:i]) <= task_index < sum(agent_task_counts[:i + 1]))
         agent_task_counts[agent_index] -= 1
 
-        OperatorFunctions.find_best_task_position(cost_matrix, agent_task_counts, task_order,
-                                                  task, robot_cost_matrix, inital_robot_cost_matrix)
+        OperatorFunctions.__find_best_task_position(cost_matrix, agent_task_counts, task_order,
+                                                    task, robot_cost_matrix, inital_robot_cost_matrix)
         return task_order, agent_task_counts
 
     # Intensifiers
@@ -614,4 +616,65 @@ class OperatorFunctions:
                 task_order[j], task_order[j_next], task_order[i], task_order[i_next]
             )
 
+        return task_order, agent_task_counts
+
+    @staticmethod
+    def two_opt_intra(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix,
+                      first_improvement: bool = False):
+        """
+        Lock-aware 2-opt inside each agent route: reverse [i:j] if it improves fitness.
+        - Keeps the first task of each agent segment fixed (the 'next' task).
+        - Never crosses segment boundaries.
+
+        Args:
+            first_improvement: if True, apply the first improving reversal found (faster);
+                               if False, search all pairs and apply the best (slower, better).
+
+        Returns:
+            (task_order, agent_task_counts)
+        """
+        from copy import deepcopy
+
+        task_order, agent_task_counts = deepcopy(current_solution)
+
+        # Segment boundaries (flattened indices)
+        bounds = [0]
+        for c in agent_task_counts:
+            bounds.append(bounds[-1] + c)
+
+        best_fit = Fitness.fitness_function_robot_pose(
+            (task_order, agent_task_counts),
+            cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+        )
+
+        best_order = task_order
+        improved = False
+
+        # Iterate each agent segment
+        for a in range(len(agent_task_counts)):
+            start, end = bounds[a], bounds[a + 1]  # [start, end)
+            seg_len = end - start
+            if seg_len <= 2:
+                continue
+
+            # i starts at start+1 to keep the very first task in the segment fixed
+            for i in range(start + 1, end - 1):
+                for j in range(i + 1, end):
+                    cand = best_order[:] if first_improvement and improved else task_order[:]
+                    cand[i:j + 1] = reversed(cand[i:j + 1])
+
+                    fit = Fitness.fitness_function_robot_pose(
+                        (cand, agent_task_counts),
+                        cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+                    )
+
+                    if fit < best_fit:
+                        best_fit = fit
+                        best_order = cand
+                        improved = True
+                        if first_improvement:
+                            return best_order, agent_task_counts
+
+        if improved:
+            return best_order, agent_task_counts
         return task_order, agent_task_counts

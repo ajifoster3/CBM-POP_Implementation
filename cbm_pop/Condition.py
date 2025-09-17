@@ -1,39 +1,32 @@
 from collections import Counter
 from cbm_pop.Operator import Operator
-from enum import Enum
-
-class Condition(Enum):
-    C_0 = 0 # Starting a DI-cycle
-    C_1 = 1 # A diversification operator was previous applied
-    C_2 = 2 # The first intensification operator was applied
-    C_3 = 3 # The second intensification operator was applied
-    C_4 = 4
-
 
 class ConditionFunctions:
     @staticmethod
-    def perceive_condition(previous_experience):
+    def perceive_condition_row(previous_experience, intensifiers, diversifiers):
         """
-        Calculates the condition based on the experience memory of which operators where used previously.
-        :param previous_experience: Experience memory
-        :return: The current condition
+        Returns the row index:
+          0 = DI start (no previous experience)
+          1 = last operator was a diversifier
+          2..(2+n_int-1) = last operator was intensifier j -> 2 + j
         """
         if not previous_experience:
-            return Condition.C_0
-        if previous_experience[-1][1] in {Operator.BEST_COST_ROUTE_CROSSOVER,
-                                          Operator.INTRA_DEPOT_REMOVAL,
-                                          Operator.INTRA_DEPOT_SWAPPING,
-                                          #Operator.INTER_DEPOT_SWAPPING,
-                                          Operator.SINGLE_ACTION_REROUTING}:
-            return Condition.C_1
-            # New condition: check if both TWO_SWAP and ONE_MOVE have been used once without improvement
-        last_two_operators = [entry[1] for entry in previous_experience[-3:]]
-        if Counter(last_two_operators) == Counter([Operator.TWO_SWAP, Operator.ONE_MOVE]) and \
-                all(entry[2] == 0 for entry in previous_experience[-2:]):  # Check if gain is zero for both entries
-            return Condition.C_4
-        if previous_experience[-1][1] == Operator.TWO_SWAP:
-            return Condition.C_2
-        if previous_experience[-1][1] == Operator.ONE_MOVE:
-            return Condition.C_3
-        return Condition.C_1
+            return 0
 
+        op_order = list(intensifiers) + list(diversifiers)
+        n_int = len(intensifiers)
+
+        # previous_experience items are [condition_unused, op_col_idx, gain]
+        last_op = previous_experience[-1][1]
+
+        # If last_op is already an int, use it; if it's an Operator enum, map to column index.
+        if isinstance(last_op, int):
+            op_col = last_op
+        else:
+            op_col = op_order.index(last_op)  # raises if unknown, which is fine to surface
+
+        # Intensifier columns are 0..n_int-1 since intensifiers come first in op_order
+        if 0 <= op_col < n_int:
+            return 2 + op_col  # intensifier rows start at 2
+        else:
+            return 1  # diversifier

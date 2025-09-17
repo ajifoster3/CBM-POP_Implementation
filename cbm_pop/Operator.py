@@ -9,3 +9,4 @@ class Operator(Enum):
     INTRA_DEPOT_SWAPPING = 5
     #INTER_DEPOT_SWAPPING = 6 Not applicable due to lack of depots
     SINGLE_ACTION_REROUTING = 6
+    TWO_OPT_INTRA = 7

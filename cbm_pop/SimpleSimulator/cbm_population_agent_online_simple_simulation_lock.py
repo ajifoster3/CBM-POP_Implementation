@@ -16,7 +16,6 @@ from cbm_pop.Condition import ConditionFunctions, Condition
 from cbm_pop.Fitness import Fitness
 from cbm_pop.Operator_Fuctions import OperatorFunctions
 from cbm_pop.WeightMatrix import WeightMatrix
-from cbm_pop.Problem import Problem
 from rclpy.node import Node
 from std_msgs.msg import String, Float32
 import rclpy
