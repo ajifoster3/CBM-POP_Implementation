@@ -896,17 +896,29 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         else:
             min_fitness_index = len(self.previous_experience)
 
+        seen_pairs = set()
+
+
         for i in range(min_fitness_index):
             condition, op_col, gain = self.previous_experience[i]
             row = condition
             col = int(op_col)
+
+            key = (row, col)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+
             current_q = self.weight_matrix.weights[row][col]
             if i + 1 < len(self.previous_experience):
                 next_condition = self.previous_experience[i + 1][0]
                 max_next_q = max(self.weight_matrix.weights[next_condition])
             else:
                 max_next_q = 0
+
+            # keep your original reward logic
             self.reward = self.positive_reward if self.best_local_improved else self.negative_reward
+
             updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
             updated_q = max(updated_q, 1e-6)
             self.weight_matrix.weights[row][col] = updated_q

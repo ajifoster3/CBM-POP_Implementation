@@ -37,13 +37,13 @@ mkdir -p "$RESULTS_ROOT"
 # Q-Learning params
 LR_VALUES=(0.5)
 POSITIVE_REWARD_VALUES=(3.0)
-NEGATIVE_REWARD_VALUES=(-0.5)
-GAMMA_DECAYS=(0.25 0.5)
+NEGATIVE_REWARD_VALUES=(-1.0)
+GAMMA_DECAYS=(0.25)
 # ρ is used by BOTH Q-Learning (mimetism) and Ferreira
 RHO_VALUES=(0.20)
 
 # Ferreira-only η
-ETA_VALUES=(0.05 0.10 0.20)
+ETA_VALUES=(0.20)
 
 # Booleans must be lowercase YAML to be parsed as bool
 LOCK_MODES=(false)
