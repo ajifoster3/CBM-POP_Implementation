@@ -51,7 +51,9 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                  negative_reward=-0.5,
                  num_tsp_agents=10,
                  lock_mode: bool = False,
-                 preserve_next_task = False):
+                 preserve_next_task = False,
+                 use_ucb: bool = False,
+                 ucb_c: float = 1.0):
 
         """
         Initialises the agent on startup
@@ -79,6 +81,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                       - Gamma Decay:     {gamma_decay}
                       - Positive Reward: {positive_reward}
                       - Negative Reward: {negative_reward}
+
+                    UCB:
+                      - Enabled:         {use_ucb}
+                      - Exploration c:   {ucb_c}
 
                     Number of TSP Agents: {num_tsp_agents}
                     =======================================================
@@ -163,8 +169,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.current_solution = None
         self.is_covered = [False] * self.problem.num_tasks
 
-
-
         self.last_purge_agent_true_id = None
         self.is_agent_tobe_purged = False
         self.failed_agents = [False] * self.num_tsp_agents
@@ -212,27 +216,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             f'/central_control/uas_{agent_id}/goal_pose',
             10)
 
-        # Kill robot subscribers
-        '''
-        self.kill_robot_subscribers = []
-        for id in range(self.num_tsp_agents):
-            topic = f'/central_control/uas_{id + 1}/kill_robot'
-            sub = self.create_subscription(
-                Bool,
-                topic,
-                lambda msg, agent=(id + 1): self.kill_robot_callback(msg, agent),
-                10
-            )
-            self.kill_robot_subscribers.append(sub)
-        
-        # Revive subscriber
-        self.revive_robot_sub = self.create_subscription(
-            Bool,
-            f'/central_control/uas_{agent_id}/revive_robot',
-            self.__revive_robot_callback,
-            10
-        )
-        '''
         # Finished coverage pub/sub
         self.finished_coverage_pub = self.create_publisher(
             FinishedCoverage,
@@ -266,7 +249,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                                                           callback_group=self.cb_group)
         self.create_timer(5, self.__check_stale_agents)
 
-
         # Q-learning params
         self.lr = lr
         self.reward = 0
@@ -280,43 +262,11 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.task_covered = -1
         self.is_new_task_covered = False
 
-        '''
-        import matplotlib.pyplot as plt
-        import matplotlib.animation as animation
-
-        # Inside __init__
-        self.fig, self.ax = plt.subplots()
-        self.im = None  # placeholder for the cost matrix image
-        self._plt_lock = threading.Lock()
-        '''
-
-
-    '''def _start_cost_plot(self):
-        """Start the cost matrix animation thread."""
-        self.ani = animation.FuncAnimation(self.fig, self._update_cost_plot, interval=1000)
-        plt.show()
-    '''
-
-    '''def _update_cost_plot(self, _):
-        """Update plot with latest robot cost matrix."""
-        with self._plt_lock:
-            if self.robot_cost_matrix is None or not isinstance(self.robot_cost_matrix, np.ndarray):
-                return
-
-            self.ax.clear()
-            self.ax.set_title(f"Robot Cost Matrix (Agent {self.agent_ID})")
-            im = self.ax.imshow(self.robot_cost_matrix, cmap='viridis', interpolation='nearest')
-            self.ax.set_xlabel("Tasks")
-            self.ax.set_ylabel("Robots")
-
-            # Draw a rectangle to outline the current task cell
-            if hasattr(self, 'current_task') and self.current_task is not None:
-                rect = patches.Rectangle(
-                    (self.current_task - 0.5, self.agent_ID - 0.5),  # (x, y) in data coords
-                    1, 1, linewidth=2, edgecolor='red', facecolor='none'
-                )
-                self.ax.add_patch(rect)
-    '''
+        # UCB settings/state
+        self.use_ucb = use_ucb
+        self.ucb_c = ucb_c
+        # If you want per-condition counts later, change key to (cond_idx, op)
+        self.operator_usage_counts = {}
 
     # ======================= AUDIT HELPERS ==========================
     def __audit_solution(self, where: str, sol):
@@ -418,165 +368,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         for i, sol in enumerate(pop):
             self.__audit_solution(f"{where}.pop[{i}]", sol)
     # ===================== END AUDIT HELPERS ========================
-    '''
-    def kill_robot_callback(self, msg, failed_agent_true_id):
-        """
-        This Fails a robot.
-        """
-        print(f"Kill signal received for agent: {failed_agent_true_id}")
-        if failed_agent_true_id == self.true_agent_ID:
-            self.am_i_failed = True
-            if msg.data:
-                goal_pose = SimplePosition()
-                goal_pose.x_position = self.robot_poses[self.true_agent_ID][0]
-                goal_pose.y_position = self.robot_poses[self.true_agent_ID][1]
-                self.goal_pose_publisher.publish(goal_pose)
-                self.current_task = None
-
-    def __purge_agent(self, purge_agent_true_id):
-        """
-        Removes a "purged agent" from all solutions.
-        """
-        print("Purging")
-        agent_idx = purge_agent_true_id - 1 - sum(self.failed_agents[:purge_agent_true_id])
-        num_agents = len(self.population[0][1]) if self.population else 0
-
-        def update_solution(solution):
-            if solution is None:
-                return None
-            order, allocations = solution
-            if num_agents <= 1:
-                return (order, allocations)
-
-            new_order = list(order)
-            new_alloc = list(allocations)
-
-            new_owner_idx = agent_idx - 1 if agent_idx > 0 else len(new_alloc) - 1
-            counter = 0
-            for i in range(agent_idx):
-                counter += new_alloc[i]
-            start_idx = counter
-            end_idx = start_idx + new_alloc[agent_idx]
-            purged_tasks = new_order[start_idx:end_idx]
-
-            print(f"alloc_before: {agent_idx}: {new_alloc}")
-            del new_alloc[agent_idx]
-            del new_order[start_idx:end_idx]
-            new_owner_idx = agent_idx - 1 if agent_idx > 0 else len(new_alloc) - 1
-            print(f"alloc_after: {agent_idx}: {new_alloc}")
-            counter = 0
-            print(f"{new_owner_idx + 1}")
-            for i in range(new_owner_idx + 1):
-                counter += new_alloc[i]
-
-            if agent_idx == 0:
-                new_order.extend(purged_tasks)
-            else:
-                new_order[counter:counter] = purged_tasks
-
-            new_alloc[new_owner_idx] += len(purged_tasks)
-            return (new_order, new_alloc)
-
-        # Update all relevant solutions with DIFF/AUDIT
-        for idx, solution in enumerate(self.population):
-            before = solution
-            self.population[idx] = update_solution(solution)
-            self.__diff_solutions(f"purge_agent.pop[{idx}]", before, self.population[idx])
-            self.__audit_solution(f"purge_agent.pop[{idx}]", self.population[idx])
-
-        before_cur = self.current_solution
-        self.current_solution = update_solution(self.current_solution)
-        self.__diff_solutions("purge_agent.current", before_cur, self.current_solution)
-        self.__audit_solution("purge_agent.current", self.current_solution)
-
-        before_coal = self.coalition_best_solution
-        self.coalition_best_solution = update_solution(self.coalition_best_solution)
-        self.__diff_solutions("purge_agent.coalition", before_coal, self.coalition_best_solution)
-        self.__audit_solution("purge_agent.coalition", self.coalition_best_solution)
-        print(f"Agent {self.agent_ID}: {self.coalition_best_solution}")
-
-    def __revive_robot_callback(self, msg):
-        """
-        Revives the agent.
-        """
-        self.am_i_failed = False
-        self.is_agent_tobe_purged = False
-        self.last_purge_agent_true_id = None
-        agent_id = self.true_agent_ID
-        print(f"Revive request received for Agent {agent_id}")
-
-        if not self.failed_agents[agent_id] and agent_id != self.true_agent_ID:
-            print(f"Agent {agent_id} is already active. Ignoring revive request.")
-            return
-
-        if self.run_timer is None:
-            print(f"Restarting run_step for Agent {agent_id}.")
-            self.run_timer = self.create_timer(0.01, self.run_step, callback_group=self.me_cb_group)
-
-        if self.environmental_representation_timer is None:
-            self.environmental_representation_timer = self.create_timer(5,
-                                                                        self.__environmental_representation_timer_callback,
-                                                                        callback_group=self.cb_group)
-
-        if self.run_goal_publisher_timer is None:
-            self.run_goal_publisher_timer = self.create_timer(0.5, self.__publish_goal_pose,
-                                                              callback_group=self.cb_group)
-
-        if self.solution_publisher_timer is None:
-            self.solution_publisher_timer = self.create_timer(2, self.__regular_solution_publish_timer,
-                                                              callback_group=self.cb_group)
-
-        if self.environmental_representation_subscriber is None:
-            self.environmental_representation_subscriber = self.create_subscription(
-                EnvironmentalRepresentation,
-                '/environmental_representation',
-                self.__environmental_representation_callback,
-                10,
-                callback_group=self.cb_group
-            )
-
-        print(f"Agent {agent_id} successfully revived and all timers restarted.")
-
-    def unpurge_agent(self, agent_id):
-        """
-        Reintroduces the specified agent into all the solutions, and recalculates robot cost matrix.
-        """
-        print(f"Reviving Agent {agent_id}...")
-        self.failed_agents[agent_id - 1] = False
-        self.purged_agents[agent_id - 1] = False
-        self.is_agent_tobe_purged = False
-
-        def reintegrate_agent(solution):
-            if solution is None:
-                return None
-            order, allocations = solution
-            new_order = list(order)
-            new_alloc = list(allocations)
-            if agent_id - 1 < len(new_alloc):
-                new_alloc.insert(agent_id - 1, 0)
-                print(f"Inserted empty path for Agent {agent_id}")
-            return (new_order, new_alloc)
-
-        for idx, solution in enumerate(self.population):
-            before = solution
-            self.population[idx] = reintegrate_agent(solution)
-            self._diff_solutions(f"unpurge_agent.pop[{idx}]", before, self.population[idx])
-            self._audit_solution(f"unpurge_agent.pop[{idx}]", self.population[idx])
-
-        before_cur = self.current_solution
-        self.current_solution = reintegrate_agent(self.current_solution)
-        self._diff_solutions("unpurge_agent.current", before_cur, self.current_solution)
-        self._audit_solution("unpurge_agent.current", self.current_solution)
-
-        before_coal = self.coalition_best_solution
-        self.coalition_best_solution = reintegrate_agent(self.coalition_best_solution)
-        self._diff_solutions("unpurge_agent.coalition", before_coal, self.coalition_best_solution)
-        self._audit_solution("unpurge_agent.coalition", self.coalition_best_solution)
-
-        self.new_robot_cost_matrix = self.problem.calculate_robot_cost_matrix(self.robot_poses)
-        self.is_new_robot_cost_matrix = True
-
-    '''
 
     def _active_agent_indices(self):
         """Indices of robots that are not purged/failed (in coalition space)."""
@@ -698,10 +489,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             ordered_task_list = [t for r in per_agent_routes for t in r]
             allocation_counts = [len(r) for r in per_agent_routes]
             candidate = (ordered_task_list, allocation_counts)
-            try:
-                self.__audit_solution(f"gen_voronoi.sol_{sol_idx}", candidate, level="INFO")
-            except Exception:
-                pass
             population.append(candidate)
 
         return population
@@ -811,15 +598,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     self.current_task = task
                     print(f"Current Task is {task}")
                     return
-                '''
-                    if self.is_finished == True:
-                        self.is_finished = False
-                        m = FinishedCoverage()
-                        m.finished = False
-                        m.robot_id = self.agent_ID
-                        self.finished_coverage_pub.publish(m)
-                    return
-                '''
             self.current_task = None
 
         except Exception as ex:
@@ -884,6 +662,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     def __individual_learning(self):
         """
         Learning with Bellman Equation.
+        First-visit per (condition, op): only one update per unique pair
+        in the prefix up to min_fitness_index.
         """
         cumulative_gains = []
         total_gain = 0
@@ -896,8 +676,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         else:
             min_fitness_index = len(self.previous_experience)
 
+        # NEW: de-duplicate updates per unique (condition, op) in the prefix
         seen_pairs = set()
-
 
         for i in range(min_fitness_index):
             condition, op_col, gain = self.previous_experience[i]
@@ -981,7 +761,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 f"    Error Message: {e}\n"
                 f"    Stack Trace:\n{traceback.format_exc()}"
             )
-            #print(f"{self.coalition_best_solution}")
             print(error_message)
 
     def handle_allocated_task(self, current_task):
@@ -1007,15 +786,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     counter += task_count
                 return order, allocations
 
-                # Update population
-
             for idx, solution in enumerate(self.population):
                 self.population[idx] = update_solution(solution, current_task)
 
             # Update current_solution and coalition_best_solution if they exist
             self.current_solution = update_solution(self.current_solution, current_task)
             self.coalition_best_solution = update_solution(self.coalition_best_solution, current_task)
-            #print(f"Task {current_task} is allocated: {self.is_covered[current_task]}")
 
     def __finished_coverage_callback(self, msg):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
@@ -1072,60 +848,33 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         - Never trims uncovered tasks.
         """
 
-        # ---- helpers (local) ---------------------------------------------------
-
         def __sanitize_strip_covered(sol):
             """Strip already-covered tasks per segment (preserves segment sizes)."""
             if not sol:
                 return sol
             order, alloc = sol
-            # reuse your existing per-segment stripper
             return self.__remove_covered_tasks_from_solution((list(order), list(alloc)))
 
-        # ---- parse received ----------------------------------------------------
         try:
             recv_order = list(msg.order)
             recv_alloc = list(msg.allocations)
         except Exception:
-            # Fallback if the subscriber already hands us (order, alloc)
             if isinstance(msg, (tuple, list)) and len(msg) == 2:
                 recv_order, recv_alloc = list(msg[0]), list(msg[1])
             else:
-                self.get_logger().error("[AUDIT:solution_update_callback] bad incoming message")
                 return
 
         received = (recv_order, recv_alloc)
 
-        # For logging: diff old coalition -> raw received (before sanitize)
-        if self.coalition_best_solution:
-            self.__diff_solutions("solution_update_callback", self.coalition_best_solution, received,
-                                  label_old="coalition", label_new="received")
-
-        # ---- (1) Observe coverage from missing tasks ---------------------------
-        #cur_snapshot = self.coalition_best_solution or self.current_solution
-        #__diff_observe_coverage(cur_snapshot, received)
-
-        # ---- (2) Sanitize the received solution --------------------------------
-        # strip covered tasks per segment, then dedupe per segment
         cand = __sanitize_strip_covered(received)
-        self.__audit_solution("solution_update_callback.candidate_sanitized", cand)
 
-        # Optional: log if covered tasks were present in the raw received plan
         covered_in_recv = [t for t in recv_order
                            if 0 <= t < self.problem.num_tasks and self.is_covered[t]]
-        if covered_in_recv:
-            self.get_logger().warning(
-                f"[AUDIT:solution_update_callback.strip_recv] stripped_covered={covered_in_recv[:10]}"
-                f"{'...' if len(covered_in_recv) > 10 else ''}"
-            )
 
-        # ---- (3) Sanitize our coalition for a fair compare ---------------------
         cur = self.coalition_best_solution
         if cur:
             cur = __sanitize_strip_covered(cur)
-            self.__audit_solution("solution_update_callback.coalition_sanitized", cur)
 
-        # ---- (4) Compare and adopt if strictly better (lower fitness) ----------
         if self.lock_mode:
             cand_f = SimpleFitness.fitness_function_locked_tasks(
                 cand,
@@ -1147,21 +896,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                         self.problem
                     ) if cur else float("inf")
 
-        # If candidate is empty after sanitize/dedupe, ignore.
         if not cand or not cand[0]:
             self.get_logger().info("[AUDIT:solution_update_callback.ignored] empty_candidate_after_sanitize")
             return
 
         if cand_f < cur_f:
             self._set_coalition_best_solution(cand)
-            self.get_logger().info(
-                f"[AUDIT:solution_update_callback.adopted] score_old={cur_f:.6f} score_new={cand_f:.6f}"
-            )
-            # (Optionally publish here; you already have a periodic publisher.)
-        else:
-            self.get_logger().info(
-                f"[AUDIT:solution_update_callback.ignored] score_old={cur_f:.6f} score_new={cand_f:.6f}"
-            )
 
     def __remove_extra_tasks(self, solution, target_task_count):
         """
@@ -1170,33 +910,25 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         if solution is None:
             return None
 
-        self.__audit_solution("remove_extra_tasks.IN", solution)
-
         order, allocations = deepcopy(solution)
         order, allocations = self.__remove_covered_tasks_from_solution((order, allocations))
 
         total = sum(allocations)
         if total <= target_task_count:
             out = (order, allocations)
-            self.__audit_solution("remove_extra_tasks.OUT_nochange", out)
             return out
 
-        # Simple trimming: cycle agents, remove from the tail of each segment
         idx = len(allocations) - 1
         while sum(allocations) > target_task_count and any(a > 0 for a in allocations):
             if allocations[idx] > 0:
-                # remove last task of this agent's segment
                 end = sum(allocations[:idx + 1])
                 start = end - allocations[idx]
                 if end - 1 >= start:
                     removed_task = order.pop(end - 1)
                     allocations[idx] -= 1
-                    self.get_logger().warning(f"[AUDIT:remove_extra_tasks] trimming task={removed_task} from agent={idx}")
             idx = (idx - 1) % len(allocations)
 
         out = (order, allocations)
-        self.__diff_solutions("remove_extra_tasks", solution, out)
-        self.__audit_solution("remove_extra_tasks.OUT", out)
         return out
 
     def __global_pose_callback(self, msg):
@@ -1223,9 +955,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     if self.is_generating is False:
                         self.is_generating = True
                         self.population = self.__generate_population_voronoi()
-                        self.__audit_population("population_voronoi_init", self.population)
                         self.current_solution = self.__select_solution()
-                        self.__audit_solution("select_solution.current", self.current_solution)
 
                 self.run_timer = self.create_timer(0.1, self.run_step, callback_group=self.me_cb_group)
                 self.is_loop_started = True
@@ -1279,16 +1009,9 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         if not self.is_loop_started:
             return
 
-        # Ignore if already marked covered locally
         if 0 <= covered_task < len(self.is_covered) and self.is_covered[covered_task]:
             return
 
-        self.get_logger().info(
-            f"[AUDIT:covered] Agent {self.true_agent_ID} observed covered_task={covered_task}"
-            + (f" by agent={covered_by}" if covered_by is not None else "")
-        )
-
-        # Update local bitmap and broadcast our current view of coverage
         self.is_covered[covered_task] = True
         rep = EnvironmentalRepresentation()
         rep.agent_id = self.true_agent_ID
@@ -1310,7 +1033,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             new_order = list(order)
             new_alloc = list(allocations)
 
-            # 1) Prefer to remove from the broadcaster's segment if known
             removed = False
             if covered_by is not None and 0 <= covered_by < len(new_alloc) and new_alloc[covered_by] > 0:
                 s, e = _seg_bounds(new_alloc, covered_by)
@@ -1321,12 +1043,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     new_alloc[covered_by] = max(0, new_alloc[covered_by] - 1)
                     removed = True
                 except ValueError:
-                    pass  # not in that segment locally
+                    pass
 
-            # 2) If not removed yet, remove wherever it appears and decrement that owner
             if not removed and covered_task in new_order:
                 pos = new_order.index(covered_task)
-                # Find segment owner of this position
                 cum = 0
                 owner_idx = None
                 for idx, a in enumerate(new_alloc):
@@ -1338,7 +1058,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 if owner_idx is not None and new_alloc[owner_idx] > 0:
                     new_alloc[owner_idx] -= 1
 
-            # 3) Clamp allocations to match order length (safety net)
             if sum(new_alloc) != len(new_order):
                 fixed = []
                 cursor = 0
@@ -1348,39 +1067,26 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     cursor += take
                 new_alloc = fixed
 
-            # Reset transient flags
             self.task_covered = -1
             self.is_new_task_covered = False
             return (new_order, new_alloc)
 
-        # Apply to all maintained solutions with audits/diffs
         for i, sol in enumerate(self.population):
             before = sol
             self.population[i] = update_solution(sol)
-            self.__diff_solutions(f"handle_covered_task.population[{i}]", before, self.population[i],
-                                  label_old="before", label_new="after")
-            self.__audit_solution(f"handle_covered_task.population[{i}]", self.population[i])
 
         before_cur = self.current_solution
         self.current_solution = update_solution(self.current_solution)
-        self.__diff_solutions("handle_covered_task.current", before_cur, self.current_solution)
-        self.__audit_solution("handle_covered_task.current", self.current_solution)
 
         before_coal = self.coalition_best_solution
         self.coalition_best_solution = update_solution(self.coalition_best_solution)
-        self.__diff_solutions("handle_covered_task.coalition", before_coal, self.coalition_best_solution)
-        self.__audit_solution("handle_covered_task.coalition", self.coalition_best_solution)
 
-        # Only the agent who actually covered advances to the next task
         if covered_by == self.true_agent_ID:
             self.__assign_next_task(self.coalition_best_solution)
 
     def __environmental_representation_callback(self, msg: EnvironmentalRepresentation):
         """
         On receiving another agent's environmental representation, merge coverage.
-        We prefer removing newly-covered tasks from the broadcaster's segment to keep
-        allocations aligned with who actually did the work. We do NOT advance our head
-        unless we were the covering agent (enforced in __handle_covered_task).
         """
         if self.am_i_failed:
             return
@@ -1389,12 +1095,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             agent_id = msg.agent_id
             self.last_env_rep_timestamps[agent_id] = time()
 
-            # Integrate newly-covered tasks, attributing to the broadcaster
             for i in range(len(msg.is_covered)):
                 if msg.is_covered[i] and not self.is_covered[i]:
                     self.__handle_covered_task(i, covered_by=agent_id)
 
-            # Track potential revival
             if self.failed_agents[agent_id]:
                 self.agent_to_revive = agent_id
 
@@ -1472,7 +1176,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     def __select_random_solution(self):
         if not self.population:
             return None
-        return random.choice(self.population)  # simpler & avoids k=1
+        return random.choice(self.population)
 
     def regular_solution_publish_timer(self):
         """
@@ -1533,7 +1237,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             idx += count
 
         audited = (new_order, new_allocs)
-        self.__audit_solution("remove_covered_tasks_from_solution", audited)
         return audited
 
     def __preserve_next_task_if_better(self, reference_solution, target_solution, base_f=None):
@@ -1603,7 +1306,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             except concurrent.futures.TimeoutError:
                 return None
             except Exception:
-                # The caller will log details; returning None signals "skip this step".
                 return None
 
     def __apply_operator(self, operator):
@@ -1613,12 +1315,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         """
         import traceback
 
-        # Validate current_solution
         if not self.current_solution or not isinstance(self.current_solution, (list, tuple)) \
                 or len(self.current_solution) < 2 or not self.current_solution[0]:
             return None
 
-        # Count valid population members (non-empty (order,alloc))
         def _valid(sol):
             if not sol or not isinstance(sol, (list, tuple)) or len(sol) < 2:
                 return False
@@ -1628,7 +1328,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         pop = self.population or []
         valid = [s for s in pop if _valid(s)]
 
-        # If there aren't at least 2 valid solutions (current + at least one other), skip
         if len(valid) <= 1:
             self.get_logger().debug("[OP] Skipping operator: not enough valid candidates in population.")
             return None
@@ -1702,7 +1401,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             )
         return coalition_best_solution_fitness, current_solution_fitness, local_best_solution_fitness, new_solution_fitness
 
-
     def __is_stuck(self):
         condition_row = ConditionFunctions.perceive_condition_row(
             self.previous_experience, self.intensifiers, self.diversifiers
@@ -1728,9 +1426,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         try:
             c_pres = self.__preserve_next_task_if_better(self.current_solution, c_new)
             if c_pres is not None and c_pres is not c_new:
-                self.__diff_solutions("preserve_next_task_if_better", c_new, c_pres,
-                                      label_old="c_new", label_new="c_pres")
-                self.__audit_solution("preserve_next_task_if_better.c_pres", c_pres)
                 c_new = c_pres
         except Exception as e:
             self.get_logger().warning(f"[preserve_next_task] skipped due to: {e}")
@@ -1762,12 +1457,43 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.previous_experience = []
         self.di_cycle_count = 0
 
+    @staticmethod
+    def choose_operator_ucb(weights, condition, operator_usage_counts, enabled_ops, exploration_constant: float = 1.0):
+        """
+        UCB1 selection over enabled_ops using the row from weights corresponding to `condition`.
+        `operator_usage_counts` should track counts for operators in enabled_ops.
+        """
+        cond_idx = condition if not hasattr(condition, 'value') else condition.value
+        row = weights[cond_idx]
+
+        # Ensure counts for enabled ops
+        for op in enabled_ops:
+            operator_usage_counts.setdefault(op, 0)
+
+        total_usage = sum(operator_usage_counts[op] for op in enabled_ops)
+
+        # Cold start
+        if total_usage == 0:
+            return random.choice(enabled_ops)
+
+        ucb_scores = []
+        for idx, op in enumerate(enabled_ops):
+            avg_reward = row[idx]
+            count = operator_usage_counts[op]
+            if count == 0:
+                bonus = float('inf')
+            else:
+                bonus = exploration_constant * math.sqrt(math.log(total_usage) / count)
+            score = avg_reward + bonus
+            ucb_scores.append(score)
+
+        best_index = int(np.argmax(ucb_scores))
+        return enabled_ops[best_index]
 
     def run_step(self):
         """
         A single step of the `run` method, executed periodically by the ROS2 timer.
         """
-        print("RunStep")
 
         if self.am_i_failed:
             return
@@ -1777,36 +1503,15 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         if self.is_new_task_covered:
             self.__handle_covered_task(self.task_covered)
 
-
         if self.current_solution is not None and len(self.current_solution[0]) > 0:
 
             if self.current_solution:
                 before = self.current_solution
                 self.current_solution = self.__remove_covered_tasks_from_solution(self.current_solution)
-                self.__diff_solutions("run_step.clean_current", before, self.current_solution,
-                                      label_old="current_before", label_new="current_after")
             if self.coalition_best_solution:
                 before_c = self.coalition_best_solution
                 self.coalition_best_solution = self.__remove_covered_tasks_from_solution(self.coalition_best_solution)
-                self.__diff_solutions("run_step.clean_coalition", before_c, self.coalition_best_solution,
-                                      label_old="coal_before", label_new="coal_after")
-            '''
-            if self.is_agent_tobe_purged and not self.purged_agents[self.last_purge_agent_true_id - 1] and len(
-                    self.current_solution[1]) > self.failed_agents.count(False):
-                print("Purging agent")
-                self.purge_agent(self.last_purge_agent_true_id)
-                self.purged_agents[self.last_purge_agent_true_id - 1] = True
-                self.is_agent_tobe_purged = None
 
-            if self.agent_to_revive:
-                if self.agent_ID >= self.agent_to_revive:
-                    print(f"I was robot: {self.agent_ID}, now becoming robot: {self.agent_ID + 1}")
-                    self.agent_ID = self.agent_ID + 1
-                self.unpurge_agent(self.agent_to_revive)
-                self.agent_to_revive = None
-
-            num_false = self.failed_agents.count(False)
-            '''
             if self.__stopping_criterion(self.iteration_count):
                 self.run_timer.cancel()
                 return
@@ -1816,11 +1521,21 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
             if self.no_improvement_attempt_count >= self.no_improvement_attempts:
                 self.current_solution = self.__select_random_solution()
-                self.__audit_solution("run_step.select_random_solution", self.current_solution)
                 self.no_improvement_attempt_count = 0
 
-            operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition,
-                                                         self.intensifiers + self.diversifiers)
+            enabled_ops = self.intensifiers + self.diversifiers
+            if self.use_ucb:
+                operator = self.choose_operator_ucb(
+                    self.weight_matrix.weights,
+                    condition,
+                    self.operator_usage_counts,
+                    enabled_ops,
+                    exploration_constant=self.ucb_c
+                )
+                # Track usage for UCB
+                self.operator_usage_counts[operator] = self.operator_usage_counts.get(operator, 0) + 1
+            else:
+                operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition, enabled_ops)
 
             c_new = self.__apply_operator(operator)
             if c_new is None:
@@ -1855,21 +1570,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 self.di_cycle_count += 1
 
                 if self.__end_of_di_cycle(self.di_cycle_count) or self.__is_stuck():
-
                     self.__finish_di_cycle()
 
                 self.iteration_count += 1
             else:
                 print("Something went wrong with applying the operator and resulted in a None.")
 
-        # Sentinel audits (periodic)
-        try:
-            if self.current_solution:
-                self.__audit_solution("sentinel.current", self.current_solution)
-            if self.coalition_best_solution:
-                self.__audit_solution("sentinel.coalition", self.coalition_best_solution)
-        except Exception:
-            pass
 
 
 
@@ -1955,6 +1661,9 @@ def main(args=None):
         # NEW PARAMETERS
         "eta": 0.1,
         "rho": 0.1,
+        # UCB toggle/strength
+        "use_ucb": False,
+        "ucb_c": 1.0,
     }
     for k, v in params.items():
         temp_node.declare_parameter(k, v)
@@ -1971,6 +1680,8 @@ def main(args=None):
     preserve_next_task = temp_node.get_parameter("preserve_next_task").value
     eta             = temp_node.get_parameter("eta").value
     rho             = temp_node.get_parameter("rho").value
+    use_ucb         = temp_node.get_parameter("use_ucb").value
+    ucb_c           = temp_node.get_parameter("ucb_c").value
     temp_node.destroy_node()
 
     node_name = f"cbm_population_agent_{agent_id}"
@@ -1980,7 +1691,8 @@ def main(args=None):
         agent_id=agent_id, node_name=node_name, learning_method=learning_method,
         num_tsp_agents=num_tsp_agents, lr=lr,
         gamma_decay=gamma_decay, positive_reward=positive_reward,
-        negative_reward=negative_reward, lock_mode=lock_mode, preserve_next_task=preserve_next_task
+        negative_reward=negative_reward, lock_mode=lock_mode, preserve_next_task=preserve_next_task,
+        use_ucb=use_ucb, ucb_c=ucb_c
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 
@@ -2030,4 +1742,3 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
-
