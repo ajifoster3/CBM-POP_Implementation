@@ -1218,24 +1218,64 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     def __remove_covered_tasks_from_solution(self, solution):
         """
         Remove already-covered tasks while preserving per-agent boundaries.
+        Fail fast if any invalid task IDs or slice issues are detected.
         """
         if solution is None:
             return None
 
+        from copy import deepcopy
         order, allocations = deepcopy(solution)
-        new_order = []
-        new_allocs = []
 
-        idx = 0
-        for count in allocations:
-            seg = order[idx:idx + count]
-            seg_kept = [t for t in seg if not self.is_covered[t]]
+        n_tasks = len(self.is_covered)
+        new_order, new_allocs = [], []
+
+        cursor = 0
+        total_alloc = sum(allocations)
+        if total_alloc > len(order):
+            msg = (f"[FATAL] sum(allocations)={total_alloc} > len(order)={len(order)}; "
+                   f"allocations inconsistent with order.")
+            print(msg)
+            raise IndexError(msg)
+
+        for seg_idx, count in enumerate(allocations):
+            seg_end = cursor + int(count)
+            if seg_end > len(order):
+                msg = (f"[FATAL] seg_idx={seg_idx} slice out of bounds: "
+                       f"cursor={cursor}, count={count}, len(order)={len(order)}")
+                print(msg)
+                raise IndexError(msg)
+
+            seg = order[cursor:seg_end]
+            seg_kept = []
+
+            for t in seg:
+                try:
+                    ti = int(t)
+                except Exception:
+                    msg = f"[FATAL] Non-integer task id in seg={seg_idx}: t={t!r}"
+                    print(msg)
+                    raise IndexError(msg)
+
+                if ti < 0 or ti >= n_tasks:
+                    msg = (f"[FATAL] Out-of-range task id in seg={seg_idx}: "
+                           f"t={ti}, n_tasks={n_tasks}")
+                    print(msg)
+                    raise IndexError(msg)
+
+                if not self.is_covered[ti]:
+                    seg_kept.append(ti)
+
             new_order.extend(seg_kept)
             new_allocs.append(len(seg_kept))
-            idx += count
+            cursor = seg_end
 
-        audited = (new_order, new_allocs)
-        return audited
+        if sum(new_allocs) != len(new_order):
+            msg = (f"[FATAL] new_allocs sum mismatch: "
+                   f"sum(new_allocs)={sum(new_allocs)} len(new_order)={len(new_order)}")
+            print(msg)
+            raise IndexError(msg)
+
+        return (new_order, new_allocs)
 
     def __preserve_next_task_if_better(self, reference_solution, target_solution, base_f=None):
         """
