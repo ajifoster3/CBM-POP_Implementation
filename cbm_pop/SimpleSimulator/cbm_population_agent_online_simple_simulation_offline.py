@@ -40,7 +40,8 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
                  gamma_decay = 0.99,
                  positive_reward = 1,
                  negative_reward = -0.5,
-                 num_tsp_agents = 10):
+                 num_tsp_agents = 10,
+                 problem_size: int = 10):
 
         """
         Initialises the agent on startup
@@ -69,11 +70,20 @@ class CBMPopulationAgentOnlineSimpleSimulationOffline(Node):
               - Negative Reward: {negative_reward}
 
             Number of TSP Agents: {num_tsp_agents}
+            Problem Size:         {problem_size}
             =======================================================
             """
         self.get_logger().info(settings_str)
         self.current_task = None
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
+        self.problem_size = int(problem_size)
+        if self.problem_size < 1:
+            raise ValueError("problem_size must be >= 1")
+
+        self.task_poses = [
+            (i + 0.5, j + 0.5)
+            for i in range(self.problem_size)
+            for j in range(self.problem_size)
+        ]
 
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
@@ -788,11 +798,13 @@ def main(args=None):
     temp_node.declare_parameter("runtime", -1.0)
     temp_node.declare_parameter("learning_method", "Ferreira_et_al.")
     temp_node.declare_parameter("num_tsp_agents", 5)
+    temp_node.declare_parameter("problem_size", 10)
 
     agent_id = temp_node.get_parameter("agent_id").value
     runtime = temp_node.get_parameter("runtime").value
     learning_method = temp_node.get_parameter("learning_method").value
     num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
+    problem_size = temp_node.get_parameter("problem_size").value
 
     temp_node.declare_parameter("lr", 0.5)
     temp_node.declare_parameter("gamma_decay", 0.99)
@@ -821,7 +833,8 @@ def main(args=None):
         gamma_decay=gamma_decay,
         positive_reward=positive_reward,
         negative_reward=negative_reward,
-        num_tsp_agents=num_tsp_agents
+        num_tsp_agents=num_tsp_agents,
+        problem_size=problem_size
     )
     print("CBMPopulationAgentOnlineSimpleSimulationOffline has been initialized.")
 

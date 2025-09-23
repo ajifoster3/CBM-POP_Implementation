@@ -45,7 +45,8 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
                  gamma_decay = 0.99,
                  positive_reward = 1.0,
                  negative_reward = -0.5,
-                 num_tsp_agents = 10):
+                 num_tsp_agents = 10,
+                 problem_size: int = 15):
 
         """
         Initialises the agent on startup
@@ -54,7 +55,15 @@ class CBMPopulationAgentOnlineSimpleSimulationLock(Node):
 
         print(f"Intiialising agent with parameters: lr {lr}, gamma_decay {gamma_decay}, positive reward {positive_reward}, negative reward: {negative_reward}")
 
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
+        self.problem_size = int(problem_size)
+        if self.problem_size < 1:
+            raise ValueError("problem_size must be >= 1")
+
+        self.task_poses = [
+            (i + 0.5, j + 0.5)
+            for i in range(self.problem_size)
+            for j in range(self.problem_size)
+        ]
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
         self.pop_size = pop_size
@@ -1371,6 +1380,7 @@ def main(args=None):
     temp_node.declare_parameter("positive_reward", 1.0)
     temp_node.declare_parameter("negative_reward", -0.5)
     temp_node.declare_parameter("num_tsp_agents", 10)
+    temp_node.declare_parameter("problem_size", 15)
 
     agent_id = temp_node.get_parameter("agent_id").value
     runtime = temp_node.get_parameter("runtime").value
@@ -1381,6 +1391,7 @@ def main(args=None):
     positive_reward = temp_node.get_parameter("positive_reward").value
     negative_reward = temp_node.get_parameter("negative_reward").value
     num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
+    problem_size = temp_node.get_parameter("problem_size").value
 
     temp_node.destroy_node()
 
@@ -1389,7 +1400,8 @@ def main(args=None):
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_iterations=9999999, num_solution_attempts=21, agent_id=agent_id,
         node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents, lr=lr,
-        gamma_decay=gamma_decay, positive_reward=positive_reward, negative_reward=negative_reward
+        gamma_decay=gamma_decay, positive_reward=positive_reward, negative_reward=negative_reward,
+        problem_size=problem_size
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 

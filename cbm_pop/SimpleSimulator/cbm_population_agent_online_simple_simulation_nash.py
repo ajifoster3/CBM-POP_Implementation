@@ -41,14 +41,23 @@ class CBMPopulationAgentOnlineSimpleSimulationNash(Node):
                  gamma_decay=0.99,
                  positive_reward=1.0,
                  negative_reward=-0.5,
-                 num_tsp_agents=10):
+                 num_tsp_agents=10,
+                 problem_size: int = 10):
 
         """
         Initialises the agent on startup
         """
         super().__init__(node_name)
 
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(10) for j in range(10)]
+        self.problem_size = int(problem_size)
+        if self.problem_size < 1:
+            raise ValueError("problem_size must be >= 1")
+
+        self.task_poses = [
+            (i + 0.5, j + 0.5)
+            for i in range(self.problem_size)
+            for j in range(self.problem_size)
+        ]
         self.num_tasks = len(self.task_poses)
         self.is_generating = False
         self.pop_size = pop_size
@@ -1426,18 +1435,21 @@ def main(args=None):
     temp_node.declare_parameter("runtime", -1.0)
     temp_node.declare_parameter("learning_method", "Ferreira et al.")
     temp_node.declare_parameter("num_tsp_agents", 5)
+    temp_node.declare_parameter("problem_size", 10)
 
     agent_id = temp_node.get_parameter("agent_id").value
     runtime = temp_node.get_parameter("runtime").value
     learning_method = temp_node.get_parameter("learning_method").value
     num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
+    problem_size = temp_node.get_parameter("problem_size").value
     temp_node.destroy_node()
 
     node_name = f"cbm_population_agent_{agent_id}"
     agent = CBMPopulationAgentOnlineSimpleSimulationNash(
         pop_size=10, eta=0.1, rho=0.1, di_cycle_length=5, epsilon=0.01,
         num_iterations=9999999, num_solution_attempts=21, agent_id=agent_id,
-        node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents
+        node_name=node_name, learning_method=learning_method, num_tsp_agents=num_tsp_agents,
+        problem_size=problem_size
     )
     print("CBMPopulationAgentOnlineSimpleSimulationNash has been initialized.")
 
