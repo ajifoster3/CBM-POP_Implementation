@@ -50,6 +50,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                  positive_reward=1,
                  negative_reward=-0.5,
                  num_tsp_agents=10,
+                 problem_size=15,
                  lock_mode: bool = False,
                  preserve_next_task = False,
                  use_ucb: bool = False,
@@ -87,6 +88,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                       - Exploration c:   {ucb_c}
 
                     Number of TSP Agents: {num_tsp_agents}
+                    Problem Size:         {problem_size}
                     =======================================================
                     """
         print(settings_str)
@@ -100,12 +102,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.current_task = None
         self.current_tasks = [-1] * num_tsp_agents
 
-        self.problem = SimpleProblem(ProblemClass.SimpleGrid)
-
-        """
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
-        self.num_tasks = len(self.task_poses)
-        """
+        self.problem = SimpleProblem(ProblemClass.SimpleGrid, grid_size=problem_size)
+        self.problem_size = self.problem.grid_size
 
         self.lock_mode = lock_mode
         self.preserve_next_task = preserve_next_task
@@ -1656,6 +1654,7 @@ def main(args=None):
         "positive_reward": 1.0,
         "negative_reward": -0.5,
         "num_tsp_agents": 10,
+        "problem_size": 15,
         "lock_mode": False,
         "preserve_next_task": False,
         # NEW PARAMETERS
@@ -1676,6 +1675,7 @@ def main(args=None):
     positive_reward = temp_node.get_parameter("positive_reward").value
     negative_reward = temp_node.get_parameter("negative_reward").value
     num_tsp_agents  = temp_node.get_parameter("num_tsp_agents").value
+    problem_size    = temp_node.get_parameter("problem_size").value
     lock_mode       = temp_node.get_parameter("lock_mode").value
     preserve_next_task = temp_node.get_parameter("preserve_next_task").value
     eta             = temp_node.get_parameter("eta").value
@@ -1692,7 +1692,7 @@ def main(args=None):
         num_tsp_agents=num_tsp_agents, lr=lr,
         gamma_decay=gamma_decay, positive_reward=positive_reward,
         negative_reward=negative_reward, lock_mode=lock_mode, preserve_next_task=preserve_next_task,
-        use_ucb=use_ucb, ucb_c=ucb_c
+        use_ucb=use_ucb, ucb_c=ucb_c, problem_size=problem_size
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 

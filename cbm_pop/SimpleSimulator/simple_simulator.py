@@ -208,13 +208,25 @@ def main():
     parser = argparse.ArgumentParser(description="Run CBM-POP Simulation")
     parser.add_argument('--num_robots', type=int, default=2, help='Number of robots')
     parser.add_argument('--speed', type=float, default=0.05, help='Robot speed')
-    parser.add_argument('--env_size', type=int, default=5, help='Environment size (square)')
+    parser.add_argument('--problem_size', type=int, default=None,
+                        help='Side length of the square grid (number of cells per side)')
+    parser.add_argument('--env_size', type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     rclpy.init(args=sys.argv)
 
-    tasks = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
-    env_bounds = [0, 15, 0, 15]
+    problem_size = args.problem_size if args.problem_size is not None else args.env_size
+    if problem_size is None:
+        problem_size = 15
+
+    problem_size = int(problem_size)
+    if problem_size < 1:
+        raise ValueError("problem_size must be >= 1")
+
+    args.problem_size = problem_size
+
+    tasks = [(i + 0.5, j + 0.5) for i in range(problem_size) for j in range(problem_size)]
+    env_bounds = [0, problem_size, 0, problem_size]
     xmin, xmax, ymin, ymax = env_bounds
 
     starts = [[(np.random.uniform(xmin, xmax), np.random.uniform(ymin, ymax))] for _ in range(args.num_robots)]

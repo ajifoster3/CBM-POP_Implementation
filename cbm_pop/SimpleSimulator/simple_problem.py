@@ -9,12 +9,26 @@ class ProblemClass(Enum):
 
 
 class SimpleProblem:
-    def __init__(self, problem_class):
+    def __init__(self, problem_class, grid_size=15):
         self.task_poses = None
         self.initial_robot_cost_matrix = None
         self.current_robot_cost_matrix = None
+        self.problem_class = problem_class
+
+        try:
+            size = int(grid_size)
+        except (TypeError, ValueError):
+            raise ValueError("grid_size must be an integer") from None
+
+        if size < 1:
+            raise ValueError("grid_size must be >= 1")
+
+        self.grid_size = size
+
         if problem_class == ProblemClass.SimpleGrid:
-            self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
+            self.task_poses = [(i + 0.5, j + 0.5) for i in range(size) for j in range(size)]
+        else:
+            raise NotImplementedError(f"Unsupported problem class: {problem_class}")
         self.cost_matrix = self.calculate_cost_matrix()
         self.num_tasks = len(self.task_poses)
 

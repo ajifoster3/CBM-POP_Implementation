@@ -55,7 +55,12 @@ class SimpleFitnessLogger(Node):
 
         # Allow overriding agents if you want (otherwise auto-detect from first Solution)
         self.declare_parameter('num_tsp_agents', 10)
+        self.declare_parameter('problem_size', 15)
         self.num_tsp_agents = self.get_parameter('num_tsp_agents').get_parameter_value().integer_value
+        self.problem_size = self.get_parameter('problem_size').get_parameter_value().integer_value
+
+        if self.problem_size < 1:
+            raise ValueError("problem_size must be >= 1")
 
         # Output root
         self.declare_parameter('parent_log_dir', 'resources/run_logs')
@@ -91,8 +96,12 @@ class SimpleFitnessLogger(Node):
         with open(self.debug_log_file, mode="w") as f:
             f.write("Debug log for simple_fitness_logger\n")
 
-        # World/task info (10x10 grid at cell centers)
-        self.task_poses = [(i + 0.5, j + 0.5) for i in range(15) for j in range(15)]
+        # World/task info (square grid at cell centers)
+        self.task_poses = [
+            (i + 0.5, j + 0.5)
+            for i in range(self.problem_size)
+            for j in range(self.problem_size)
+        ]
         self.problem = ProblemAdapter()
         self.problem.cost_matrix = self.calculate_task_task_cost_matrix()
 
