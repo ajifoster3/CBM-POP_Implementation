@@ -1260,6 +1260,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     msg = (f"[FATAL] Out-of-range task id in seg={seg_idx}: "
                            f"t={ti}, n_tasks={n_tasks}")
                     print(msg)
+                    print(f"{solution}")
                     raise IndexError(msg)
 
                 if not self.is_covered[ti]:
