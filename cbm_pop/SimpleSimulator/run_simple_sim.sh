@@ -38,10 +38,10 @@ mkdir -p "$RESULTS_ROOT"
 
 # Hyper-parameter grids
 # Q-Learning params
-LR_VALUES=()
+LR_VALUES=(0.1 0.25 0.5 0.75 0.9)
 POSITIVE_REWARD_VALUES=(3.0)
 NEGATIVE_REWARD_VALUES=(-1.0)
-GAMMA_DECAYS=(0.25)
+GAMMA_DECAYS=(0.1 0.25 0.5 0.75)
 # ρ is used by BOTH Q-Learning (mimetism) and Ferreira
 RHO_VALUES=(0.20)
 
