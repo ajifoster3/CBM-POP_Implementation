@@ -58,20 +58,26 @@ UCB_C_VALUES=(0.25)
 
 # Methods to sweep
 LEARNING_METHODS=('Q-Learning' 'Ferreira_et_al.')
-# LEARNING_METHODS=('Q-Learning' 'Ferreira_et_al.')
 
 # ===== Helpers =====
 unique_id () {
   printf "%(%Y%m%d_%H%M%S)T_%04x" -1 "$((RANDOM%65536))"
 }
 
+# Robust kill that doesn't assume pkill exists
 kill_pid_tree () {
   local pid="$1"
   [ -z "${pid:-}" ] && return 0
-  pkill -TERM -P "$pid" 2>/dev/null || true
+
+  # Recursively terminate children first
+  local child
+  for child in $(ps -o pid= --ppid "$pid" 2>/dev/null || true); do
+    kill_pid_tree "$child"
+  done
+
+  # Send TERM then KILL
   kill -TERM "$pid" 2>/dev/null || true
-  sleep 1
-  pkill -KILL -P "$pid" 2>/dev/null || true
+  sleep 0.5
   kill -KILL "$pid" 2>/dev/null || true
 }
 
@@ -85,6 +91,7 @@ cleanup_run () {
   for p in "${agent_pids[@]}"; do kill_pid_tree "$p"; done
 }
 
+# Use exec so the PID we get is the real ROS2 process, not the stdbuf wrapper
 start_logged () {
   local logfile="$1"; local roslogdir="$2"; shift 2
   mkdir -p "$(dirname "$logfile")" "$roslogdir"
@@ -93,7 +100,8 @@ start_logged () {
   PYTHONUNBUFFERED=1 \
   PYTHONFAULTHANDLER=1 \
   PYTHONASYNCIODEBUG=1 \
-  stdbuf -oL -eL "$@" >>"$logfile" 2>&1 & echo $!
+  bash -c 'exec stdbuf -oL -eL "$@" >>"$0" 2>&1' "$logfile" "$@" &
+  echo $!
 }
 
 decode_status () {
@@ -102,11 +110,28 @@ decode_status () {
   else echo "exited with code $status"; fi
 }
 
+# Zombie-aware liveness check
 check_first_dead () {
   FIRST_DEAD_PID=""
-  local pid
+  local pid stat
+
   for pid in "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; do
     [ -z "$pid" ] && continue
+
+    # If ps can't find the pid, it's dead
+    if ! ps -p "$pid" >/dev/null 2>&1; then
+      FIRST_DEAD_PID="$pid"
+      return 1
+    fi
+
+    # If it's a zombie, treat as dead
+    stat="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{print $1}')"
+    if [ -n "$stat" ] && [[ "$stat" == Z* ]]; then
+      FIRST_DEAD_PID="$pid"
+      return 1
+    fi
+
+    # As a fallback, if SIG 0 fails, it's dead
     if ! kill -0 "$pid" 2>/dev/null; then
       FIRST_DEAD_PID="$pid"
       return 1
@@ -258,12 +283,13 @@ start_all_processes () {
   done
 }
 
-on_sigint () {
-  echo "[INTERRUPT] Cleaning up processes..."
-  cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
-  exit 130
-}
-trap on_sigint INT
+# ===== Traps for cluster signals =====
+on_sigint ()  { echo "[SIGINT] Cleaning up processes..."; cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; exit 130; }
+on_sigterm () { echo "[SIGTERM] Cleaning up processes..."; cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; exit 143; }
+on_exit ()    { cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; }
+trap on_sigint  INT
+trap on_sigterm TERM
+trap on_exit    EXIT
 
 # ===== Main sweep =====
 for PROBLEM_SIZE in "${PROBLEM_SIZES[@]}"; do
@@ -317,6 +343,7 @@ for PROBLEM_SIZE in "${PROBLEM_SIZES[@]}"; do
                             RUN_TIMEOUT=0
                             FIRST_DEAD_PID=""
 
+                            # Polling loop with zombie-aware detection and timeout
                             while true; do
                               sleep 2
                               CURRENT_TIME=$(date +%s)
