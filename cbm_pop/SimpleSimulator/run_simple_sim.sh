@@ -21,8 +21,8 @@ export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
 
 # ===== Configuration =====
-AGENT_COUNTS=(2)
-PROBLEM_SIZES=(15)
+AGENT_COUNTS=(4)
+PROBLEM_SIZES=(8)
 NUM_AGENTS="${AGENT_COUNTS[0]}"
 PROBLEM_SIZE="${PROBLEM_SIZES[0]}"
 NUM_RUNS=100
@@ -38,7 +38,7 @@ mkdir -p "$RESULTS_ROOT"
 
 # Hyper-parameter grids
 # Q-Learning params
-LR_VALUES=(0.5)
+LR_VALUES=()
 POSITIVE_REWARD_VALUES=(3.0)
 NEGATIVE_REWARD_VALUES=(-1.0)
 GAMMA_DECAYS=(0.25)
