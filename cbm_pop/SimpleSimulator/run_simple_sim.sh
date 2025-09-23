@@ -21,7 +21,10 @@ export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
 
 # ===== Configuration =====
-NUM_AGENTS=2
+AGENT_COUNTS=(2)
+PROBLEM_SIZES=(15)
+NUM_AGENTS="${AGENT_COUNTS[0]}"
+PROBLEM_SIZE="${PROBLEM_SIZES[0]}"
 NUM_RUNS=100
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
@@ -126,7 +129,7 @@ write_param_tag_file () {
   local _use_ucb="$1"; shift
   local _ucb_c="$1"; shift
 
-  local line="method=${_method} lock=${_lock} preserve_next_task=${_preserve} use_ucb=${_use_ucb} ucb_c=${_ucb_c}"
+  local line="method=${_method} lock=${_lock} preserve_next_task=${_preserve} use_ucb=${_use_ucb} ucb_c=${_ucb_c} num_agents=${NUM_AGENTS} problem_size=${PROBLEM_SIZE}"
 
   if [[ "$_method" == "Q-Learning" ]]; then
     local _gamma="$1"; local _lr="$2"; local _pos="$3"; local _neg="$4"; local _rho="$5"
@@ -157,6 +160,7 @@ write_run_settings () {
     echo "use_ucb=${_use_ucb}"
     echo "ucb_c=${_ucb_c}"
     echo "num_agents=${NUM_AGENTS}"
+    echo "problem_size=${PROBLEM_SIZE}"
     echo "runtime=${RUNTIME}"
     echo "timeout_seconds=${TIMEOUT_SECONDS}"
     echo "package=${PACKAGE_NAME}"
@@ -207,14 +211,18 @@ start_all_processes () {
   LOGGER_LOG="$CONFIG_DIR/logger.log"
   LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
-      --ros-args -p parent_log_dir:="'$CONFIG_DIR'")
+      --ros-args \
+        -p parent_log_dir:="'$CONFIG_DIR'" \
+        -p num_tsp_agents:="$NUM_AGENTS" \
+        -p problem_size:="$PROBLEM_SIZE")
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
   # Simulator
   SIM_LOG="$CONFIG_DIR/simulator.log"
   SIM_PID=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE" \
-      --num_robots "$NUM_AGENTS")
+      --num_robots "$NUM_AGENTS" \
+      --problem_size "$PROBLEM_SIZE")
   PID_ROLE["$SIM_PID"]="simulator"; PID_LOG["$SIM_PID"]="$SIM_LOG"
 
   # Agents
@@ -227,6 +235,7 @@ start_all_processes () {
                   -p runtime:="$RUNTIME"
                   -p learning_method:="'${CUR_METHOD}'"
                   -p num_tsp_agents:="$NUM_AGENTS"
+                  -p problem_size:="$PROBLEM_SIZE"
                   -p lock_mode:=${CUR_LOCK}
                   -p preserve_next_task:=${CUR_PRESERVE}
                   -p use_ucb:=${CUR_USE_UCB}
@@ -257,22 +266,107 @@ on_sigint () {
 trap on_sigint INT
 
 # ===== Main sweep =====
-for METHOD in "${LEARNING_METHODS[@]}"; do
-  METHOD_TAG="$(slug "$METHOD")"
-  for LOCK in "${LOCK_MODES[@]}"; do
-    for PRESERVE in "${PRESERVE_NEXT_TASKS[@]}"; do
-      for USE_UCB in "${USE_UCBS[@]}"; do
-        for UCB_C in "${UCB_C_VALUES[@]}"; do
+for PROBLEM_SIZE in "${PROBLEM_SIZES[@]}"; do
+  for NUM_AGENTS in "${AGENT_COUNTS[@]}"; do
+    COMBO_TAG="size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}"
+    COMBO_ROOT="$RESULTS_ROOT/$COMBO_TAG"
+    mkdir -p "$COMBO_ROOT"
 
-          if [[ "$METHOD" == "Q-Learning" ]]; then
-            for GAMMA_DECAY in "${GAMMA_DECAYS[@]}"; do
-              for LR in "${LR_VALUES[@]}"; do
-                for POSITIVE_REWARD in "${POSITIVE_REWARD_VALUES[@]}"; do
-                  for NEGATIVE_REWARD in "${NEGATIVE_REWARD_VALUES[@]}"; do
+    echo "[INFO] Sweeping problem_size=$PROBLEM_SIZE num_agents=$NUM_AGENTS"
+
+    for METHOD in "${LEARNING_METHODS[@]}"; do
+      METHOD_TAG="$(slug "$METHOD")"
+      for LOCK in "${LOCK_MODES[@]}"; do
+        for PRESERVE in "${PRESERVE_NEXT_TASKS[@]}"; do
+          for USE_UCB in "${USE_UCBS[@]}"; do
+            for UCB_C in "${UCB_C_VALUES[@]}"; do
+
+              if [[ "$METHOD" == "Q-Learning" ]]; then
+                for GAMMA_DECAY in "${GAMMA_DECAYS[@]}"; do
+                  for LR in "${LR_VALUES[@]}"; do
+                    for POSITIVE_REWARD in "${POSITIVE_REWARD_VALUES[@]}"; do
+                      for NEGATIVE_REWARD in "${NEGATIVE_REWARD_VALUES[@]}"; do
+                        for RHO in "${RHO_VALUES[@]}"; do
+                          PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
+                          mkdir -p "$PARAM_DIR"
+                          write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+
+                          EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
+                          START_RUN=$((EXISTING_RUNS + 1))
+                          if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
+                            echo "[INFO] Already completed $EXISTING_RUNS runs for $PARAM_DIR. Skipping."
+                            continue
+                          fi
+
+                          run=$START_RUN
+                          while [ $run -le $NUM_RUNS ]; do
+                            echo "============================="
+                            echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO ucb=$USE_UCB ucb_c=$UCB_C num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE"
+                            echo "============================="
+
+                            CONFIG_DIR="$PARAM_DIR/run_${run}"
+                            ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
+                            mkdir -p "$ROS2_LOG_DIR"
+
+                            write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+
+                            # placeholders: ETA=0, RHO_F=0 (Ferreira), RHO_SHARED=$RHO (QL)
+                            start_all_processes "$LOCK" "$PRESERVE" "$METHOD" "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" 0 0 "$RHO" "$USE_UCB" "$UCB_C"
+
+                            START_TIME=$(date +%s)
+                            RUN_TIMEOUT=0
+                            FIRST_DEAD_PID=""
+
+                            while true; do
+                              sleep 2
+                              CURRENT_TIME=$(date +%s)
+                              ELAPSED=$((CURRENT_TIME - START_TIME))
+
+                              if ! check_first_dead; then
+                                role="${PID_ROLE[$FIRST_DEAD_PID]}"
+                                logf="${PID_LOG[$FIRST_DEAD_PID]}"
+                                if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
+                                echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
+                                echo "--------- last 120 lines of $logf ---------"
+                                tail -n 120 "$logf" || true
+                                echo "-------------------------------------------"
+                                break
+                              fi
+
+                              if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+                                echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
+                                RUN_TIMEOUT=1
+                                break
+                              fi
+                            done
+
+                            cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
+
+                            if [ "$RUN_TIMEOUT" -eq 1 ]; then
+                              echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
+                              rm -rf "$CONFIG_DIR"
+                              echo "[RETRY] Repeating run $run"
+                              continue
+                            fi
+
+                            echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
+                            echo "[INFO] Completed run $run for $CONFIG_DIR"
+                            run=$((run + 1))
+                          done
+                        done
+                      done
+                    done
+                  done
+                done
+
+              else
+                # Non-Q-Learning (Ferreira)
+                if [[ "$METHOD" == "Ferreira_et_al." ]]; then
+                  for ETA in "${ETA_VALUES[@]}"; do
                     for RHO in "${RHO_VALUES[@]}"; do
-                      PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
+                      PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_eta_${ETA}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
                       mkdir -p "$PARAM_DIR"
-                      write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+                      write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$ETA" "$RHO"
 
                       EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
                       START_RUN=$((EXISTING_RUNS + 1))
@@ -284,17 +378,17 @@ for METHOD in "${LEARNING_METHODS[@]}"; do
                       run=$START_RUN
                       while [ $run -le $NUM_RUNS ]; do
                         echo "============================="
-                        echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO ucb=$USE_UCB ucb_c=$UCB_C"
+                        echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE eta=${ETA} rho=${RHO} ucb=$USE_UCB ucb_c=$UCB_C num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE"
                         echo "============================="
 
                         CONFIG_DIR="$PARAM_DIR/run_${run}"
                         ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
                         mkdir -p "$ROS2_LOG_DIR"
 
-                        write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" "$RHO"
+                        write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C" "$ETA" "$RHO"
 
-                        # placeholders: ETA=0, RHO_F=0 (Ferreira), RHO_SHARED=$RHO (QL)
-                        start_all_processes "$LOCK" "$PRESERVE" "$METHOD" "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" 0 0 "$RHO" "$USE_UCB" "$UCB_C"
+                        # placeholders for QL params: LR,GAMMA,POS,NEG = 0; pass ETA,RHO and no shared rho
+                        start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 "$ETA" "$RHO" 0 "$USE_UCB" "$UCB_C"
 
                         START_TIME=$(date +%s)
                         RUN_TIMEOUT=0
@@ -338,18 +432,12 @@ for METHOD in "${LEARNING_METHODS[@]}"; do
                       done
                     done
                   done
-                done
-              done
-            done
 
-          else
-            # Non-Q-Learning (Ferreira)
-            if [[ "$METHOD" == "Ferreira_et_al." ]]; then
-              for ETA in "${ETA_VALUES[@]}"; do
-                for RHO in "${RHO_VALUES[@]}"; do
-                  PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_eta_${ETA}_rho_${RHO}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
+                else
+                  # Any other non-QL method without eta/rho
+                  PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
                   mkdir -p "$PARAM_DIR"
-                  write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$ETA" "$RHO"
+                  write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C"
 
                   EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
                   START_RUN=$((EXISTING_RUNS + 1))
@@ -361,17 +449,17 @@ for METHOD in "${LEARNING_METHODS[@]}"; do
                   run=$START_RUN
                   while [ $run -le $NUM_RUNS ]; do
                     echo "============================="
-                    echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE eta=${ETA} rho=${RHO} ucb=$USE_UCB ucb_c=$UCB_C"
+                    echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE ucb=$USE_UCB ucb_c=$UCB_C num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE"
                     echo "============================="
 
                     CONFIG_DIR="$PARAM_DIR/run_${run}"
                     ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
                     mkdir -p "$ROS2_LOG_DIR"
 
-                    write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C" "$ETA" "$RHO"
+                    write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C"
 
-                    # placeholders for QL params: LR,GAMMA,POS,NEG = 0; pass ETA,RHO and no shared rho
-                    start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 "$ETA" "$RHO" 0 "$USE_UCB" "$UCB_C"
+                    # placeholders for both families
+                    start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 0 0 0 "$USE_UCB" "$UCB_C"
 
                     START_TIME=$(date +%s)
                     RUN_TIMEOUT=0
@@ -413,80 +501,11 @@ for METHOD in "${LEARNING_METHODS[@]}"; do
                     echo "[INFO] Completed run $run for $CONFIG_DIR"
                     run=$((run + 1))
                   done
-                done
-              done
-
-            else
-              # Any other non-QL method without eta/rho
-              PARAM_DIR="$RESULTS_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_ucb_${USE_UCB}_ucbc_${UCB_C}"
-              mkdir -p "$PARAM_DIR"
-              write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C"
-
-              EXISTING_RUNS=$(find "$PARAM_DIR" -maxdepth 1 -type d -name 'run_*' | wc -l | tr -d ' ')
-              START_RUN=$((EXISTING_RUNS + 1))
-              if [ "$EXISTING_RUNS" -ge "$NUM_RUNS" ]; then
-                echo "[INFO] Already completed $EXISTING_RUNS runs for $PARAM_DIR. Skipping."
-                continue
+                fi
               fi
 
-              run=$START_RUN
-              while [ $run -le $NUM_RUNS ]; do
-                echo "============================="
-                echo "[INFO] Run $run/$NUM_RUNS :: method=$METHOD lock=$LOCK preserve=$PRESERVE ucb=$USE_UCB ucb_c=$UCB_C"
-                echo "============================="
-
-                CONFIG_DIR="$PARAM_DIR/run_${run}"
-                ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
-                mkdir -p "$ROS2_LOG_DIR"
-
-                write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$run" "$USE_UCB" "$UCB_C"
-
-                # placeholders for both families
-                start_all_processes "$LOCK" "$PRESERVE" "$METHOD" 0 0 0 0 0 0 0 "$USE_UCB" "$UCB_C"
-
-                START_TIME=$(date +%s)
-                RUN_TIMEOUT=0
-                FIRST_DEAD_PID=""
-
-                while true; do
-                  sleep 2
-                  CURRENT_TIME=$(date +%s)
-                  ELAPSED=$((CURRENT_TIME - START_TIME))
-
-                  if ! check_first_dead; then
-                    role="${PID_ROLE[$FIRST_DEAD_PID]}"
-                    logf="${PID_LOG[$FIRST_DEAD_PID]}"
-                    if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
-                    echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
-                    echo "--------- last 120 lines of $logf ---------"
-                    tail -n 120 "$logf" || true
-                    echo "-------------------------------------------"
-                    break
-                  fi
-
-                  if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
-                    echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
-                    RUN_TIMEOUT=1
-                    break
-                  fi
-                done
-
-                cleanup_run "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"
-
-                if [ "$RUN_TIMEOUT" -eq 1 ]; then
-                  echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
-                  rm -rf "$CONFIG_DIR"
-                  echo "[RETRY] Repeating run $run"
-                  continue
-                fi
-
-                echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
-                echo "[INFO] Completed run $run for $CONFIG_DIR"
-                run=$((run + 1))
-              done
-            fi
-          fi
-
+            done
+          done
         done
       done
     done
