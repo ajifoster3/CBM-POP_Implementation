@@ -241,7 +241,7 @@ class SimpleSimulator:
                                     i.publish(kill_msg)
                             self.is_kill_published = True
 
-            if self.is_revive_enabled and self.is_kill_published:
+            if self.is_revive_enabled and self.is_kill_published and not self.is_revive_published:
                 total_tasks = len(self.is_covered)
                 if total_tasks > 0:
                     covered = sum(self.is_covered)
