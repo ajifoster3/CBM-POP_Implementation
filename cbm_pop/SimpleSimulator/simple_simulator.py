@@ -43,7 +43,7 @@ class SimpleSimulator:
         self.is_revive_enabled = bool(args.enable_revive)
         self.revive_threshold = float(args.revive_threshold)
         self.number_to_revive = self.number_to_kill
-        self.is_revive_published = false
+        self.is_revive_published = False
         self.revive_pubs = []
 
         # Colors for robots
