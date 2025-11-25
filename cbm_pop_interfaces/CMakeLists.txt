@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FinishedCoverage.msg"
   "msg/CurrentTask.msg"
   "msg/CumulativeReward.msg"
+  "msg/NNParameters.msg"
  )
 
 # uncomment the following section in order to fill in
