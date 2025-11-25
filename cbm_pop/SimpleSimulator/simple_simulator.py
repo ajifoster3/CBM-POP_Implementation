@@ -7,8 +7,11 @@ import numpy as np
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+
+from cbm_pop.SimpleSimulator.simple_problem import SimpleProblem, ProblemClass
 from cbm_pop.SimpleSimulator.simulator_robot import SimulatorRobot as robot
 from cbm_pop_interfaces.msg import EnvironmentalRepresentation, Solution
+from std_msgs.msg import Bool   # <<< added
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
@@ -28,6 +31,20 @@ class SimpleSimulator:
         self.finished_robots = [False] * args.num_robots
         self.is_covered = [False] * len(self.tasks)
         self.task_scat = None
+
+        # kill-robot trigger config from arguments
+        self.is_kill_enabled = bool(args.enable_kill)
+        self.kill_threshold = float(args.kill_threshold)
+        self.number_to_kill = int(args.num_to_kill)
+        self.is_kill_published = False
+        self.kill_pubs = []  # set in start_listeners if enabled
+
+        # revive-robot trigger config from arguments
+        self.is_revive_enabled = bool(args.enable_revive)
+        self.revive_threshold = float(args.revive_threshold)
+        self.number_to_revive = self.number_to_kill
+        self.is_revive_published = false
+        self.revive_pubs = []
 
         # Colors for robots
         num_robots = args.num_robots
@@ -66,7 +83,6 @@ class SimpleSimulator:
             if window is not None:
                 backend = (plt.get_backend() or "").lower()
                 try:
-                    # Try a few common GUI APIs; ignore failures
                     if hasattr(window, "show"):
                         window.show()
                     if "qt" in backend:
@@ -80,7 +96,6 @@ class SimpleSimulator:
                     elif hasattr(window, "Iconize"):  # wx
                         window.Iconize(True)
                     else:
-                        # Fallback via draw_event, but only if window exists
                         def _minimize_on_first_draw(event):
                             try:
                                 win = getattr(event.canvas.manager, "window", None)
@@ -97,7 +112,6 @@ class SimpleSimulator:
                         cid = self.fig.canvas.mpl_connect("draw_event", _minimize_on_first_draw)
                 except Exception as e:
                     print(f"[WARN] GUI minimize skipped: {type(e).__name__}: {e}")
-            # else: headless backend (Agg etc.) — do nothing
         except Exception as e:
             print(f"[WARN] Could not inspect figure manager: {type(e).__name__}: {e}")
 
@@ -137,7 +151,6 @@ class SimpleSimulator:
 
         def update(_frame):
             with self.lock:
-                # Update robot positions (skip non-finite)
                 positions = np.full((num_robots, 2), np.nan, dtype=float)
                 for i, r in enumerate(self.robots):
                     try:
@@ -145,20 +158,14 @@ class SimpleSimulator:
                         if _finite_xy(x, y):
                             positions[i] = (x, y)
                             self.robot_labels[i].set_position((x, y + 0.2))
-                        else:
-                            # keep NaN; label stays NaN, nothing drawn
-                            pass
                     except Exception:
-                        # No positions yet or other benign issues
                         pass
                 self.robot_scatter.set_offsets(positions)
 
-                # task facecolors (covered/uncovered)
                 if len(self.is_covered) == len(self.tasks) and len(self.tasks) > 0:
                     faces = ['blue' if covered else 'red' for covered in self.is_covered]
                     self.task_scat.set_facecolor(faces)
 
-                # task edgecolors by owner (outline shows agent)
                 outline_colors = []
                 for owner in self.task_owner:
                     if owner is None or owner < 0 or owner >= num_robots:
@@ -173,6 +180,9 @@ class SimpleSimulator:
         self.ani = FuncAnimation(self.fig, update, interval=50)
 
     def start_listeners(self, node):
+        # keep a reference to node so we can publish
+        self.listener_node = node
+
         # Coverage updates
         self.coverage_subscriber = node.create_subscription(
             EnvironmentalRepresentation,
@@ -190,15 +200,60 @@ class SimpleSimulator:
             callback_group=ReentrantCallbackGroup()
         )
 
+        # publisher for killing a robot — only if enabled
+        if self.is_kill_enabled:
+            for i in range(self.number_to_kill):
+                self.kill_pubs.append(node.create_publisher(
+                    Bool,
+                    f"/central_control/uas_{len(self.robot_starting_positions)-1-i}/kill_robot",
+                    10
+                ))
+
+        if self.is_revive_enabled:
+            for i in range(self.number_to_revive):
+                self.revive_pubs.append(node.create_publisher(
+                    Bool,
+                    f"/central_control/uas_{len(self.robot_starting_positions) - 1 - i}/revive_robot",
+                    10
+                ))
+
+
     def environmental_representation_callback(self, msg):
+        # update local coverage
         with self.lock:
             for i in range(len(msg.is_covered)):
                 if msg.is_covered[i]:
                     if i < len(self.is_covered):
                         self.is_covered[i] = True
-                    else:
-                        # Defensive: ignore oversized arrays
-                        pass
+
+            # kill logic — only if enabled
+            if self.is_kill_enabled and not self.is_kill_published:
+                total_tasks = len(self.is_covered)
+                if total_tasks > 0:
+                    covered = sum(self.is_covered)
+                    ratio = covered / total_tasks
+                    if ratio >= self.kill_threshold:
+                        if self.kill_pubs is not None:
+                            for i in self.kill_pubs:
+                                for _ in range(4):
+                                    kill_msg = Bool()
+                                    kill_msg.data = True
+                                    i.publish(kill_msg)
+                            self.is_kill_published = True
+
+            if self.is_revive_enabled and self.is_kill_published:
+                total_tasks = len(self.is_covered)
+                if total_tasks > 0:
+                    covered = sum(self.is_covered)
+                    ratio = covered / total_tasks
+                    if ratio >= self.revive_threshold:
+                        if self.revive_pubs is not None:
+                            for i in self.revive_pubs:
+                                for _ in range(4):
+                                    revive_msg = Bool()
+                                    revive_msg.data = True
+                                    i.publish(revive_msg)
+                            self.is_revive_published = True
 
     def solution_callback(self, msg: Solution):
         """
@@ -232,9 +287,24 @@ def main():
                         help='Side length of the square grid (number of cells per side)')
     parser.add_argument('--env_size', type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument('--no_gui', action='store_true', help='Run without GUI (headless)')
+    parser.add_argument('--problem_class', type=str, default='simple_grid', help='How tasks are distributed')
+    parser.add_argument('--problem_seed', type=int, default='simple_grid', help='Random seed for task distribution')
+
+    # <<< new params for kill behaviour
+    parser.add_argument('--enable_kill', action='store_true',
+                        help='Enable publishing a kill message once coverage reaches threshold')
+    parser.add_argument('--kill_threshold', type=float, default=0.20,
+                        help='Coverage fraction (0-1) at which to publish kill (default 0.20)')
+    parser.add_argument('--num_to_kill', type=float, default=1,
+                        help='Number of robots to kill if kill enabled')
+    parser.add_argument('--enable_revive', action='store_true',
+                        help='Enable publishing a revival message once coverage reaches a threshold')
+    parser.add_argument('--revive_threshold', type=float, default=0.80,
+                        help='Coverage fraction (0-1) at which to publish revive (default 0.80)')
+    # >>>
+
     args = parser.parse_args()
 
-    # Optional headless mode toggle
     if args.no_gui:
         matplotlib.use("Agg")
 
@@ -250,12 +320,22 @@ def main():
 
     args.problem_size = problem_size
 
-    # Build a square grid of tasks (centers at .5 offsets)
-    tasks = [(i + 0.5, j + 0.5) for i in range(problem_size) for j in range(problem_size)]
+    problem_class = args.problem_class if args.problem_class is not None else "Simple_Grid"
+    if isinstance(problem_class, str):
+        try:
+            problem_class = ProblemClass(problem_class)
+        except ValueError:
+            raise ValueError(
+                f"Invalid learning method '{problem_class}'. Must be one of: "
+                f"{[e.value for e in ProblemClass]}"
+            )
+    problem_seed = args.problem_seed if args.problem_seed is not None else 1
+    problem = SimpleProblem(problem_class=ProblemClass(problem_class), grid_size=problem_size, problem_seed=problem_seed)
+    tasks = problem.task_poses
+
     env_bounds = [0, problem_size, 0, problem_size]
     xmin, xmax, ymin, ymax = env_bounds
 
-    # Starting positions — tuples of (x, y)
     starts = [[(float(np.random.uniform(xmin, xmax)), float(np.random.uniform(ymin, ymax)))]
               for _ in range(args.num_robots)]
 
@@ -266,7 +346,6 @@ def main():
     for r in simulator.robots:
         executor.add_node(r)
 
-    # Node to listen for ROS topics (coverage + coalition best)
     listener_node = rclpy.create_node('sim_listeners')
     simulator.start_listeners(listener_node)
     executor.add_node(listener_node)
@@ -310,7 +389,6 @@ def main():
     simulator.start_simulation_thread(on_complete=shutdown)
     simulator.start_animation()
 
-    # Determine whether a GUI window exists
     try:
         has_window = bool(getattr(getattr(simulator.fig.canvas, "manager", None), "window", None))
     except Exception:

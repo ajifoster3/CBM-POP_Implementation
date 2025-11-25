@@ -284,9 +284,12 @@ class SimpleFitnessLogger(Node):
     def finished_coverage_callback(self, msg: FinishedCoverage):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
         if all(self.finished_robots[: (self.expected_agents or self.num_tsp_agents)]):
-            self.debug("Coverage Complete -> shutting down")
-            self.destroy_node()
-            rclpy.shutdown()
+            self.create_timer(5.0, self.__shutdown_ros2)
+
+    def __shutdown_ros2(self):
+        print("Shutting down ROS2 system now.")
+        self.destroy_node()
+        rclpy.shutdown()
 
     def cumulative_reward_callback(self, msg: CumulativeReward):
         with open(self.cumulative_log_file, mode='a', newline='') as file:

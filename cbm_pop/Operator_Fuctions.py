@@ -41,15 +41,28 @@ class OperatorFunctions:
         Operator.TWO_OPT_INTRA: lambda current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix:
         OperatorFunctions.two_opt_intra(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix,
                                         first_improvement=False),
+        Operator.NEAREST_K_RELOCATION: lambda current_solution, cost_matrix,
+                                                 robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.nearest_k_relocation(
+            current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix)
     }
 
     @staticmethod
-    def choose_operator(weights, condition, enabled_ops):
-        # Choose an operator (e.g., mutation, crossover) based on weight matrix W and current state
-        # For simplicity, we only apply a mutation operator in this example
+    def choose_operator(weights, condition, enabled_ops, epsilon=0.0):
+        """
+        ε-roulette operator selection.
+        - With probability ε: pick uniformly at random (exploration)
+        - With probability (1-ε): pick via weighted roulette (exploitation)
+        """
         row = weights[condition]
-        # Randomly select an operator based on weights in `row`
-        chosen_operator = random.choices(enabled_ops, weights=row, k=1)[0]
+
+        # ε-greedy roulette selection
+        if random.random() < epsilon:
+            # Exploration: uniform roulette
+            chosen_operator = random.choice(enabled_ops)
+        else:
+            # Exploitation: weighted roulette using current weights
+            chosen_operator = random.choices(enabled_ops, weights=row, k=1)[0]
+
         return chosen_operator
 
     @staticmethod
@@ -110,7 +123,8 @@ class OperatorFunctions:
             elif (operator == Operator.SINGLE_ACTION_REROUTING
                   or operator == Operator.TWO_SWAP
                   or operator == Operator.ONE_MOVE
-                  or operator == Operator.TWO_OPT_INTRA):
+                  or operator == Operator.TWO_OPT_INTRA
+                  or operator == Operator.NEAREST_K_RELOCATION):
                 return OperatorFunctions.operator_function_map[operator](current_copy, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
             #elif operator == Operator.ONE_MOVE_GRASP:
@@ -142,18 +156,42 @@ class OperatorFunctions:
         :return: A child solution
         """
         # Find the fittest solution in P that is not current_solution
-        fittest_non_current_solution = min(
-            (sol for sol in population if sol != current_solution),
-            key=lambda sol: Fitness.fitness_function_robot_pose(sol, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix)
-        )
 
-        # Randomly select a path (route) from fittest_non_current_solution
-        task_order, agent_task_counts = fittest_non_current_solution
-        selected_agent = random.randint(0, len(agent_task_counts) - 1)
+        # show identities + equality
+        for idx, sol in enumerate(population):
+            same_obj = (sol is current_solution)
+            same_val = (sol == current_solution)
 
-        # Identify the start and end indices for the selected agent's path
-        start_index = sum(agent_task_counts[:selected_agent])
-        end_index = start_index + agent_task_counts[selected_agent]
+        # filter out current_solution
+        candidate_solutions = [sol for sol in population if sol is not current_solution]
+        # if you actually want to filter by value, use "!=" instead:
+        # candidate_solutions = [sol for sol in population if sol != current_solution]
+
+
+        if not candidate_solutions:
+            return current_solution
+
+        # compute fitnesses so we can see which one is chosen
+        fitness_list = []
+        for idx, sol in enumerate(candidate_solutions):
+            try:
+                f = Fitness.fitness_function_robot_pose(
+                    sol, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+                )
+            except Exception as e:
+                f = float("inf")
+            fitness_list.append((f, sol))
+
+            # pick best (lowest) fitness
+            fittest_non_current_f, fittest_non_current_solution = min(fitness_list, key=lambda x: x[0])
+
+            # Randomly select a path (route) from fittest_non_current_solution
+            task_order, agent_task_counts = fittest_non_current_solution
+            import random
+            selected_agent = random.randint(0, len(agent_task_counts) - 1)
+
+            start_index = sum(agent_task_counts[:selected_agent])
+            end_index = start_index + agent_task_counts[selected_agent]
 
         # Extract the path for the selected agent
         selected_path = task_order[start_index:end_index]
@@ -621,60 +659,278 @@ class OperatorFunctions:
     @staticmethod
     def two_opt_intra(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix,
                       first_improvement: bool = False):
-        """
-        Lock-aware 2-opt inside each agent route: reverse [i:j] if it improves fitness.
-        - Keeps the first task of each agent segment fixed (the 'next' task).
-        - Never crosses segment boundaries.
-
-        Args:
-            first_improvement: if True, apply the first improving reversal found (faster);
-                               if False, search all pairs and apply the best (slower, better).
-
-        Returns:
-            (task_order, agent_task_counts)
-        """
         from copy import deepcopy
 
+        # Make a copy to avoid modifying the original solution
         task_order, agent_task_counts = deepcopy(current_solution)
 
-        # Segment boundaries (flattened indices)
+        # Calculate segment boundaries from agent task counts
         bounds = [0]
-        for c in agent_task_counts:
-            bounds.append(bounds[-1] + c)
+        for count in agent_task_counts:
+            bounds.append(bounds[-1] + count)
 
-        best_fit = Fitness.fitness_function_robot_pose(
+        # Establish the initial fitness score to beat
+        best_overall_fitness = Fitness.fitness_function_robot_pose(
             (task_order, agent_task_counts),
             cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
         )
 
-        best_order = task_order
-        improved = False
+        best_order_so_far = task_order
+        was_improved = False
 
-        # Iterate each agent segment
+        # Iterate through each agent's route segment
         for a in range(len(agent_task_counts)):
-            start, end = bounds[a], bounds[a + 1]  # [start, end)
-            seg_len = end - start
-            if seg_len <= 2:
+            start, end = bounds[a], bounds[a + 1]
+
+            # A 2-opt reversal needs at least 3 tasks to be meaningful when the first is fixed
+            if end - start <= 2:
                 continue
 
-            # i starts at start+1 to keep the very first task in the segment fixed
+            # i starts at start + 1 to keep the first task in the segment locked
             for i in range(start + 1, end - 1):
                 for j in range(i + 1, end):
-                    cand = best_order[:] if first_improvement and improved else task_order[:]
-                    cand[i:j + 1] = reversed(cand[i:j + 1])
+                    # Create a candidate by reversing the sub-route from the CURRENT best order
+                    # This is the key simplification and bug fix
+                    candidate_order = best_order_so_far[:]
+                    candidate_order[i:j + 1] = reversed(candidate_order[i:j + 1])
 
-                    fit = Fitness.fitness_function_robot_pose(
-                        (cand, agent_task_counts),
+                    # Evaluate the new candidate's fitness
+                    candidate_fitness = Fitness.fitness_function_robot_pose(
+                        (candidate_order, agent_task_counts),
                         cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
                     )
 
-                    if fit < best_fit:
-                        best_fit = fit
-                        best_order = cand
-                        improved = True
-                        if first_improvement:
-                            return best_order, agent_task_counts
+                    if candidate_fitness < best_overall_fitness:
+                        # An improvement was found, update our records
+                        best_overall_fitness = candidate_fitness
+                        best_order_so_far = candidate_order
+                        was_improved = True
 
-        if improved:
-            return best_order, agent_task_counts
+                        # If in "first improvement" mode, exit and return immediately
+                        if first_improvement:
+                            return best_order_so_far, agent_task_counts
+
+        # After checking all possibilities, return the best one found (or original if no improvement)
+        return best_order_so_far, agent_task_counts
+
+    @staticmethod
+    def nearest_k_relocation(current_solution,
+                             cost_matrix,
+                             robot_cost_matrix,
+                             inital_robot_cost_matrix,
+                             k: int = 8,
+                             allow_equal: bool = False,
+                             respect_locked_first: bool = True):
+        """
+        Greedy pull-in operator with roulette target-agent selection:
+        - Target agent is chosen by roulette with weight ~ 1 / (#tasks), so agents with fewer tasks are more likely.
+        - Scan its route left-to-right; for task t at position `pos`,
+          consider up to k nearest tasks (by cost_matrix[t]) that are NOT already in the target route.
+        - For each candidate c, relocate from its source agent to the target agent, but ONLY insert c
+          immediately BEFORE or AFTER t (adjacent-only).
+        - Accept the best improving (or equal, if allow_equal) relocation and commit it. Keep pulling
+          neighbors around t until no improvement, then advance.
+
+        Lock rule (if respect_locked_first=True):
+          - Never remove the first task of any agent.
+          - Never insert before the first task of the target agent.
+        """
+        from copy import deepcopy
+        import numpy as np
+        import random
+
+        # Work on a copy
+        task_order, agent_task_counts = deepcopy(current_solution)
+
+        # -------- helpers --------
+        def boundaries(counts):
+            b = [0]
+            for c in counts:
+                b.append(b[-1] + c)
+            return b
+
+        def agent_range(counts, a_idx):
+            b = boundaries(counts)
+            return b[a_idx], b[a_idx + 1]  # [start, end)
+
+        def find_agent_for_task_idx(counts, task_idx):
+            """Find agent index owning flattened task_idx."""
+            acc = 0
+            for ai, cnt in enumerate(counts):
+                if acc <= task_idx < acc + cnt:
+                    return ai
+                acc += cnt
+            return -1  # invalid
+
+        def current_fitness(order, counts):
+            return Fitness.fitness_function_robot_pose(
+                (order, counts), cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+            )
+
+        def index_map(order):
+            # map task_id -> current flattened index
+            return {t: i for i, t in enumerate(order)}
+
+        # -------- pick target route via roulette (fewer tasks => higher weight) --------
+        nonempty_agents = [i for i, c in enumerate(agent_task_counts) if c > 0]
+        if not nonempty_agents:
+            return task_order, agent_task_counts
+
+        counts = [agent_task_counts[i] for i in nonempty_agents]  # > 0
+        weights = [1.0 / c for c in counts]  # inverse count bias
+        target_agent = random.choices(nonempty_agents, k=1)[0]
+
+        cur_fit = current_fitness(task_order, agent_task_counts)
+
+        # Iterate through the chosen agent's route (update span as we modify)
+        start, end = agent_range(agent_task_counts, target_agent)
+        pos = start
+
+        while pos < end:
+            t = task_order[pos]
+
+            # ----- k nearest neighbors of t (exclude itself) -----
+            row = cost_matrix[t]
+            try:
+                order_idx = np.argsort(row)
+                nearest_all = [int(x) for x in order_idx if int(x) != t]
+            except Exception:
+                nearest_all = sorted(
+                    [j for j in range(len(row)) if j != t],
+                    key=lambda j: row[j]
+                )
+
+            # Exclude tasks currently in target route
+            #start_now, end_now = agent_range(agent_task_counts, target_agent)
+            #in_target = set(task_order[start_now:end_now])
+            #candidates = [c for c in nearest_all if c not in in_target][:k]
+            candidates = [c for c in nearest_all][:k]
+
+            best_candidate = None
+            best_candidate_fit = cur_fit
+            best_candidate_src_agent = None
+
+            idx_map_now = index_map(task_order)
+
+            # ----- scan candidates (evaluate on TEMP; apply later on LIVE) -----
+            for c in candidates:
+                if c not in idx_map_now:
+                    continue  # safety
+                c_idx = idx_map_now[c]
+
+                src_agent = find_agent_for_task_idx(agent_task_counts, c_idx)
+                if src_agent == -1:
+                    continue  # invalid
+
+                # don't move locked first task from its route
+                if respect_locked_first:
+                    src_start, _ = agent_range(agent_task_counts, src_agent)
+                    if c_idx == src_start:
+                        continue
+
+                # remove from source (TEMP state)
+                temp_order = task_order[:]
+                temp_order.pop(c_idx)
+                temp_counts = agent_task_counts[:]
+                temp_counts[src_agent] -= 1
+
+                # position of t after the TEMP removal
+                temp_pos = pos - 1 if c_idx < pos else pos
+
+                # target segment (TEMP)
+                tgt_start, tgt_end = agent_range(temp_counts, target_agent)
+
+                # allowed insertion positions: only adjacent to t (before or after)
+                ins_positions = []
+                # insert BEFORE t (disallow if lock & t at first)
+                if (not respect_locked_first) or (temp_pos > tgt_start):
+                    ins_positions.append(temp_pos)
+                # insert AFTER t (bounded by segment end for list.insert semantics)
+                ins_positions.append(min(temp_pos + 1, tgt_end))
+
+                # deduplicate just in case
+                ins_positions = list(dict.fromkeys(ins_positions))
+
+                local_best_fit = None
+                for p in ins_positions:
+                    trial_order = temp_order[:]
+                    trial_order.insert(p, c)
+                    trial_counts = temp_counts[:]
+                    trial_counts[target_agent] += 1
+                    fit = current_fitness(trial_order, trial_counts)
+                    if (local_best_fit is None) or (fit < local_best_fit):
+                        local_best_fit = fit
+
+                if local_best_fit is not None:
+                    improved = (local_best_fit < best_candidate_fit) or \
+                               (allow_equal and local_best_fit == best_candidate_fit)
+                    if improved:
+                        best_candidate = c
+                        best_candidate_fit = local_best_fit
+                        best_candidate_src_agent = src_agent
+
+            # ----- apply best candidate on LIVE state (re-evaluate adjacency safely) -----
+            if best_candidate is not None:
+                idx_map_now = index_map(task_order)
+                c_idx = idx_map_now[best_candidate]
+
+                # keep scan pointer stable if we removed before it
+                if c_idx < pos:
+                    pos -= 1
+
+                # remove from LIVE order
+                task_order.pop(c_idx)
+                agent_task_counts[best_candidate_src_agent] -= 1
+
+                # recompute target segment on LIVE state
+                tgt_start, tgt_end = agent_range(agent_task_counts, target_agent)
+
+                # allowed LIVE insertion positions: only adjacent to t
+                ins_positions = []
+                # BEFORE t (respect lock)
+                if (not respect_locked_first) or (pos > tgt_start):
+                    ins_positions.append(pos)
+                # AFTER t
+                ins_positions.append(min(pos + 1, tgt_end))
+                ins_positions = list(dict.fromkeys(ins_positions))
+
+                live_best_fit = None
+                live_best_pos = None
+                for p in ins_positions:
+                    trial_order = task_order[:]
+                    trial_order.insert(p, best_candidate)
+                    trial_counts = agent_task_counts[:]
+                    trial_counts[target_agent] += 1
+                    fit = current_fitness(trial_order, trial_counts)
+                    if (live_best_fit is None) or (fit < live_best_fit):
+                        live_best_fit = fit
+                        live_best_pos = p
+
+                if live_best_pos is None:
+                    # revert to keep feasibility
+                    task_order.insert(c_idx, best_candidate)
+                    agent_task_counts[best_candidate_src_agent] += 1
+                    pos += 1
+                else:
+                    # commit
+                    task_order.insert(live_best_pos, best_candidate)
+                    agent_task_counts[target_agent] += 1
+                    cur_fit = live_best_fit
+
+                    # refresh target span; advance pointer if insertion is before/at it
+                    start, end = agent_range(agent_task_counts, target_agent)
+                    if live_best_pos <= pos:
+                        pos += 1
+
+                # sanity (use during debugging)
+                assert len(task_order) == sum(agent_task_counts), \
+                    f"order len {len(task_order)} != counts sum {sum(agent_task_counts)}"
+
+            else:
+                # no relocation for this position; move on
+                pos += 1
+
         return task_order, agent_task_counts
+
+
+

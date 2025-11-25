@@ -28,7 +28,7 @@ class CBMPopulationAgentReevo(Node):
         self.num_tasks = num_tasks
         self.num_tsp_agents = num_tsp_agents
         self.population_gen = PopulationGenerator()
-        self.population = asyncio.run(self.population_gen.generate_population(self.pop_size))
+        self.population = asyncio.run(self.population_gen.__generate_population(self.pop_size))
         self.cost_matrix = cost_matrix
         self.agent_ID = agent_id
         self.longterm_reflector = LongTermReflector()
@@ -44,7 +44,7 @@ class CBMPopulationAgentReevo(Node):
         :return: Population of solutions of size `pop_size`
         """
 
-        return self.population_gen.generate_population(population_size)
+        return self.population_gen.__generate_population(population_size)
 
     def select_solution(self):
         """
