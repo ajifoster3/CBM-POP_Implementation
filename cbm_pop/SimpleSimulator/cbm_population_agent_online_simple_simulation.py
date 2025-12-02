@@ -1640,12 +1640,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 goal_pose = SimplePosition()
 
                 goal_pose.robot_id = self.agent_ID
-                goal_pose.x_position = self.robot_poses[self.agent_ID][0] if self.robot_poses[
-                                                                                 self.agent_ID] is not None else \
-                                                                            self.initial_robot_poses[self.agent_ID][0]
-                goal_pose.y_position = self.robot_poses[self.agent_ID][1] if self.robot_poses[
-                                                                                 self.agent_ID] is not None else \
-                                                                            self.initial_robot_poses[self.agent_ID][1]
+                goal_pose.x_position = self.initial_robot_poses[self.agent_ID][0]
+                goal_pose.y_position = self.initial_robot_poses[self.agent_ID][1]
                 self.goal_pose_publisher.publish(goal_pose)
 
                 self.current_task = None
