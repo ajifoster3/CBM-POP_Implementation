@@ -348,15 +348,37 @@ class GreedyAgentOnlineSimpleSimulation(Node):
     def kill_robot_callback(self, msg):
         if msg.data:
             self.get_logger().warn("KILL SIGNAL RECEIVED")
+
+            # 1. Explicitly release the task to peers before shutting down
+            if self.current_task is not None:
+                self.publish_task_release()
+
             self.am_i_failed = True
             self.current_task = None
+
             # Publish current pos as goal to stop
             if self.robot_poses[self.agent_ID]:
                 goal = SimplePosition()
                 goal.robot_id = self.agent_ID
-                goal.x_position = self.initial_robot_poses[self.agent_ID][0]
-                goal.y_position = self.initial_robot_poses[self.agent_ID][1]
+
+                # Use current position to freeze in place,
+                # or initial position to return home.
+                # (Freezing in place is usually better for failure simulation)
+                curr_pose = self.robot_poses[self.agent_ID]
+                goal.x_position = curr_pose[0]
+                goal.y_position = curr_pose[1]
+
                 self.goal_pose_publisher.publish(goal)
+
+    def publish_task_release(self):
+        """
+        Broadcasts task -1 so peers know I am no longer working on anything.
+        """
+        msg = CurrentTask()
+        msg.agent_id = self.agent_ID
+        msg.current_task = -1  # -1 indicates "No Task" / "Unallocated"
+        self.current_task_publisher.publish(msg)
+        self.get_logger().info("Released current task due to failure.")
 
     def revive_robot_callback(self, msg):
         if msg.data and self.am_i_failed:
