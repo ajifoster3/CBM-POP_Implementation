@@ -118,7 +118,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         })
 
         self.is_task_locked = False
-        self.max_switches_before_lock = 2  # Track maximum allowed switches
+        self.max_switches_before_lock = 5  # Track maximum allowed switches
         self.switch_count = 0  # Counter for task switching
         self.last_task = None  # Store the last assigned task
 
@@ -575,7 +575,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 old_task = self.current_task
                 if not self.is_covered[task]:
                     # If already locked, stay on the locked task
-                    if getattr(self, "task_locked", False) and self.is_task_locked:
+                    if self.is_task_locked:
                         print(f"Still locked on task {task}")
                         return
 
