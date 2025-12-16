@@ -153,6 +153,9 @@ class SimpleFitnessLogger(Node):
         self.environmental_subscriber = self.create_subscription(
             EnvironmentalRepresentation, '/environmental_representation', self.environmental_representation_callback, 10
         )
+
+        self.environmental_representation_state = [False] * (self.problem_size * self.problem_size)
+
         self.stop_subscriber = self.create_subscription(
             Bool, 'stop_plotting', self.stop_callback, 10
         )
@@ -435,9 +438,35 @@ class SimpleFitnessLogger(Node):
 
     def environmental_representation_callback(self, msg: EnvironmentalRepresentation):
         self.last_env_update_time = time()
-        timestamp = time() - self.logging_start_time
-        with open(self.environmental_log_file, mode="a", newline="") as f:
-            csv.writer(f).writerow([timestamp, msg.agent_id, json.dumps(list(msg.is_covered))])
+
+        incoming_data = list(msg.is_covered)
+
+        # Safety: Initialize state if it hasn't been set yet
+        if self.environmental_representation_state is None:
+            self.environmental_representation_state = [False] * len(incoming_data)
+
+        has_new_updates = False
+
+        # Iterate through to find and apply new 'True' values
+        for i, val in enumerate(incoming_data):
+            # If incoming is True and we haven't recorded it yet
+            if val and not self.environmental_representation_state[i]:
+                self.environmental_representation_state[i] = True
+                has_new_updates = True
+
+        # Log only if we actually updated the state
+        if has_new_updates:
+            timestamp = time() - self.logging_start_time
+
+            # Convert booleans to integers (1 and 0) for space efficiency
+            compact_state = [1 if x else 0 for x in self.environmental_representation_state]
+
+            with open(self.environmental_log_file, mode="a", newline="") as f:
+                csv.writer(f).writerow([
+                    timestamp,
+                    msg.agent_id,
+                    json.dumps(compact_state)
+                ])
 
     def stop_callback(self, msg: Bool):
         if msg.data:
