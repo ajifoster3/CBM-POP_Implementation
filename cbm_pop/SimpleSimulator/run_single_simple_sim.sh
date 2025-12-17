@@ -38,6 +38,11 @@ LOGGER_EXECUTABLE="simple_fitness_logger"
 AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 
+# *** IMPORTANT: Change this to match a log line your agent prints when it starts ***
+# If unsure, use "[" to match the start of any log timestamp.
+AGENT_INIT_MSG="["
+AGENT_STARTUP_TIMEOUT=30 # Seconds to wait for all agents to init
+
 RUNTIME=-1.0
 TIMEOUT_SECONDS=300 # 5 minutes
 
@@ -57,31 +62,31 @@ eval set -- "$PARSED"
 
 while true; do
   case "$1" in
-    -p|--p|--problem-size)       PROBLEM_SIZE="$2"; shift 2 ;;
-    -a|--a|--agents)             NUM_AGENTS="$2"; shift 2 ;;
-    -m|--m|--method)             METHOD="$2"; shift 2 ;;
-    -l|--l|--lock)               LOCK="$2"; shift 2 ;;
-    -t|--t|--preserve)           PRESERVE="$2"; shift 2 ;;
-    -r|--r|--inject)             INJECT="$2"; shift 2 ;;
-    -L|--L|--lr)                 LR="$2"; shift 2 ;;
-    -P|--P|--positive-reward)    POSITIVE_REWARD="$2"; shift 2 ;;
-    -N|--N|--negative-reward)    NEGATIVE_REWARD="$2"; shift 2 ;;
-    -G|--G|--gamma-decay)        GAMMA_DECAY="$2"; shift 2 ;;
-    -R|--R|--rho)                RHO="$2"; shift 2 ;;
-    -E|--E|--eta)                ETA="$2"; shift 2 ;;
-    -U|--U|--use-ucb)            USE_UCB="$2"; shift 2 ;;
-    -C|--C|--ucb-c)              UCB_C="$2"; shift 2 ;;
+    -p|--p|--problem-size)        PROBLEM_SIZE="$2"; shift 2 ;;
+    -a|--a|--agents)              NUM_AGENTS="$2"; shift 2 ;;
+    -m|--m|--method)              METHOD="$2"; shift 2 ;;
+    -l|--l|--lock)                LOCK="$2"; shift 2 ;;
+    -t|--t|--preserve)            PRESERVE="$2"; shift 2 ;;
+    -r|--r|--inject)              INJECT="$2"; shift 2 ;;
+    -L|--L|--lr)                  LR="$2"; shift 2 ;;
+    -P|--P|--positive-reward)     POSITIVE_REWARD="$2"; shift 2 ;;
+    -N|--N|--negative-reward)     NEGATIVE_REWARD="$2"; shift 2 ;;
+    -G|--G|--gamma-decay)         GAMMA_DECAY="$2"; shift 2 ;;
+    -R|--R|--rho)                 RHO="$2"; shift 2 ;;
+    -E|--E|--eta)                 ETA="$2"; shift 2 ;;
+    -U|--U|--use-ucb)             USE_UCB="$2"; shift 2 ;;
+    -C|--C|--ucb-c)               UCB_C="$2"; shift 2 ;;
     -B|--B|--replay-buffer-size) REPLAY_BUFFER_SIZE="$2"; shift 2 ;;
-    -Q|--Q|--tau)                TAU="$2"; shift 2 ;;
-    -T|--T|--batch-size)         BATCH_SIZE="$2"; shift 2 ;;
-    -S|--S|--inject-best-prob)   INJECT_BEST_PROB="$2"; shift 2 ;;
+    -Q|--Q|--tau)                 TAU="$2"; shift 2 ;;
+    -T|--T|--batch-size)          BATCH_SIZE="$2"; shift 2 ;;
+    -S|--S|--inject-best-prob)    INJECT_BEST_PROB="$2"; shift 2 ;;
     -H|--H|--init-with-heuristic) INIT_WITH_HEURISTIC="$2"; shift 2 ;;
     --problem-class)             PROBLEM_CLASS="$2"; shift 2 ;;
     --problem-seed)              PROBLEM_SEED="$2"; shift 2 ;;
-    --kill-thresholds)           KILL_THRESHOLDS_STR="$2"; shift 2 ;;
-    --enable-kill)               ENABLE_KILL="$2"; shift 2 ;;
-    --num-to-kill)               NUM_TO_KILL="$2"; shift 2 ;;
-    --enable-revive)             ENABLE_REVIVE="$2"; shift 2 ;;
+    --kill-thresholds)            KILL_THRESHOLDS_STR="$2"; shift 2 ;;
+    --enable-kill)                ENABLE_KILL="$2"; shift 2 ;;
+    --num-to-kill)                NUM_TO_KILL="$2"; shift 2 ;;
+    --enable-revive)              ENABLE_REVIVE="$2"; shift 2 ;;
     --revive-threshold)          REVIVE_THRESHOLDS_STR="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "Unexpected option: $1"; exit 1 ;;
@@ -423,11 +428,60 @@ start_all_processes () {
         -p rho:="$CUR_RHO_F"
       )
     fi
+
+    # LAUNCH IN PARALLEL (do not wait here)
     local pid
     pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
   done
+
+  # --- NEW: Verify All Agents Parallel ---
+  echo "   [STARTUP] Waiting for $NUM_AGENTS agents to initialize (Parallel check)..."
+  local start_wait=$(date +%s)
+
+  # track which agents are ready (0=no, 1=yes)
+  local -a is_ready
+  for ((i=0; i<NUM_AGENTS; i++)); do is_ready[$i]=0; done
+
+  local pending_count=$NUM_AGENTS
+
+  while [ "$pending_count" -gt 0 ]; do
+    local now=$(date +%s)
+    if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
+      echo "[ERROR] Startup Timeout! The following agents failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
+      for ((i=0; i<NUM_AGENTS; i++)); do
+        if [ "${is_ready[$i]}" -eq 0 ]; then
+             echo "  - Agent $i (PID ${AGENT_PIDS[$i]}) -> TIMEOUT (Log: ${PID_LOG[${AGENT_PIDS[$i]}]})"
+        fi
+      done
+      return 1
+    fi
+
+    for ((i=0; i<NUM_AGENTS; i++)); do
+      if [ "${is_ready[$i]}" -eq 0 ]; then
+        local pid=${AGENT_PIDS[$i]}
+        local logf="${PID_LOG[$pid]}"
+
+        # 1. Check if crashed
+        if ! kill -0 "$pid" 2>/dev/null; then
+             echo "[ERROR] Agent $i (PID $pid) crashed immediately! (Process gone)"
+             # We could return 1 immediately, or wait to see if others crash
+             return 1
+        fi
+
+        # 2. Check logs
+        if [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
+             is_ready[$i]=1
+             pending_count=$((pending_count - 1))
+        fi
+      fi
+    done
+    sleep 1
+  done
+
+  echo "   [STARTUP] All $NUM_AGENTS agents initialized successfully."
+  return 0
 }
 
 on_sigint () {
@@ -474,10 +528,10 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
     mkdir -p "$PARAM_DIR"
 
     write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" \
-                         "$INJECT" "$INJECT_BEST_PROB" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" \
-                         "$NEGATIVE_REWARD" "$RHO" "$ETA" "$REPLAY_BUFFER_SIZE" "$TAU" \
-                         "$BATCH_SIZE" "$INIT_WITH_HEURISTIC" "$NUM_AGENTS" "$PROBLEM_SIZE" "$PROBLEM_CLASS" \
-                         "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH"
+                          "$INJECT" "$INJECT_BEST_PROB" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" \
+                          "$NEGATIVE_REWARD" "$RHO" "$ETA" "$REPLAY_BUFFER_SIZE" "$TAU" \
+                          "$BATCH_SIZE" "$INIT_WITH_HEURISTIC" "$NUM_AGENTS" "$PROBLEM_SIZE" "$PROBLEM_CLASS" \
+                          "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH"
 
     # startup recovery: check last run_* and re-run if incomplete
     LAST_RUN_DIR=""
@@ -514,18 +568,38 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
       mkdir -p "$ROS2_LOG_DIR"
 
       write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$(unique_id)" \
-                         "$USE_UCB" "$UCB_C" "$INJECT" "$INJECT_BEST_PROB" "$PROBLEM_CLASS" \
-                         "$KILL_TH" "$REVIVE_TH"
+                          "$USE_UCB" "$UCB_C" "$INJECT" "$INJECT_BEST_PROB" "$PROBLEM_CLASS" \
+                          "$KILL_TH" "$REVIVE_TH"
 
-      start_all_processes \
-          "$LOCK" "$PRESERVE" "$INJECT" "$INJECT_BEST_PROB" "$METHOD" \
-          "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" \
-          "$ETA" "$RHO" \
-          "$RHO" \
-          "$USE_UCB" "$UCB_C" \
-          "$REPLAY_BUFFER_SIZE" "$TAU" "$BATCH_SIZE" "$PROBLEM_CLASS" "$RUN_SEED" \
-          "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
-          "$ENABLE_REVIVE" "$REVIVE_TH"
+      # Capture return value of start_all_processes
+      if ! start_all_processes \
+            "$LOCK" "$PRESERVE" "$INJECT" "$INJECT_BEST_PROB" "$METHOD" \
+            "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" \
+            "$ETA" "$RHO" \
+            "$RHO" \
+            "$USE_UCB" "$UCB_C" \
+            "$REPLAY_BUFFER_SIZE" "$TAU" "$BATCH_SIZE" "$PROBLEM_CLASS" "$RUN_SEED" \
+            "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
+            "$ENABLE_REVIVE" "$REVIVE_TH"; then
+
+        # If starting processes failed, cleanup and retry loop
+        echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
+        cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+        rm -rf "$CONFIG_DIR"
+
+        # Stuck detection
+        if [[ "$LAST_RUN_NUM" == "$run" ]]; then
+          SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
+        else
+          LAST_RUN_NUM="$run"
+          SAME_RUN_COUNT=1
+        fi
+        if [ "$SAME_RUN_COUNT" -ge 5 ]; then
+          echo "[FATAL] Run $run has failed start-up 5 times. Exiting."
+          exit 1
+        fi
+        continue
+      fi
 
       START_TIME=$(date +%s)
       RUN_TIMEOUT=0
