@@ -12,7 +12,8 @@ set -u
 # ===== Better diagnostics =====
 export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
 export RCUTILS_LOGGING_USE_STDOUT=1
-export RCUTILS_LOGGING_BUFFERED_STREAM=1
+# [DIAGNOSTIC CHANGE] Changed to 0 to force immediate flush to disk on slow filesystems
+export RCUTILS_LOGGING_BUFFERED_STREAM=0
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONASYNCIODEBUG=1
@@ -87,7 +88,7 @@ while true; do
     --enable-kill)                ENABLE_KILL="$2"; shift 2 ;;
     --num-to-kill)                NUM_TO_KILL="$2"; shift 2 ;;
     --enable-revive)              ENABLE_REVIVE="$2"; shift 2 ;;
-    --revive-threshold)          REVIVE_THRESHOLDS_STR="$2"; shift 2 ;;
+    --revive-threshold)           REVIVE_THRESHOLDS_STR="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "Unexpected option: $1"; exit 1 ;;
   esac
@@ -135,6 +136,25 @@ else
 fi
 
 # ===== Helpers =====
+
+# [DIAGNOSTIC CHANGE] Added helper to profile the node environment
+log_node_diagnostics() {
+    local out_dir="$1"
+    {
+        echo "=== NODE DIAGNOSTICS ==="
+        echo "Hostname: $(hostname)"
+        echo "Date: $(date)"
+        echo "Ulimit: $(ulimit -a)"
+        echo "--- Memory ---"
+        free -h
+        echo "--- Network Interfaces ---"
+        ip addr || ifconfig || echo "ip command missing"
+        echo "--- Env Vars (ROS specific) ---"
+        env | grep -E "ROS|RMW|PYTHON"
+        echo "--- Load Average ---"
+        uptime
+    } > "$out_dir/node_diagnostics.txt"
+}
 
 check_coverage_complete() {
   local run_dir="$1"
@@ -339,6 +359,10 @@ SIM_PID=""
 AGENT_PIDS=()
 
 start_all_processes () {
+  # [DIAGNOSTIC CHANGE] Network Isolation for HPC
+  export ROS_LOCALHOST_ONLY=1
+  export ROS_DOMAIN_ID=$(( (RANDOM % 100) + 1 ))
+
   local CUR_LOCK="$1"; shift
   local CUR_PRESERVE="$1"; shift
   local CUR_INJECT="$1"; shift
@@ -448,11 +472,29 @@ start_all_processes () {
 
   while [ "$pending_count" -gt 0 ]; do
     local now=$(date +%s)
+
+    # [DIAGNOSTIC CHANGE] Enhanced Timeout with log dumping
     if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
       echo "[ERROR] Startup Timeout! The following agents failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
+
+      echo "--- DIAGNOSTICS FOR FAILED AGENTS ---"
+      # Check dmesg for OOM kills
+      dmesg | tail -n 20 | grep -i "kill" || echo "No recent kernel kills found in dmesg"
+
       for ((i=0; i<NUM_AGENTS; i++)); do
         if [ "${is_ready[$i]}" -eq 0 ]; then
-             echo "  - Agent $i (PID ${AGENT_PIDS[$i]}) -> TIMEOUT (Log: ${PID_LOG[${AGENT_PIDS[$i]}]})"
+             local pid=${AGENT_PIDS[$i]}
+             local logf="${PID_LOG[$pid]}"
+             echo ">>> AGENT $i (PID $pid) LOG DUMP START <<<"
+             if [ -f "$logf" ]; then
+                 echo "--- HEAD (First 20 lines) ---"
+                 head -n 20 "$logf"
+                 echo "--- TAIL (Last 50 lines) ---"
+                 tail -n 50 "$logf"
+             else
+                 echo "Log file not found: $logf"
+             fi
+             echo ">>> AGENT $i LOG DUMP END <<<"
         fi
       done
       return 1
@@ -566,6 +608,9 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
       CONFIG_DIR="$PARAM_DIR/run_${run}"
       ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
       mkdir -p "$ROS2_LOG_DIR"
+
+      # [DIAGNOSTIC CHANGE] Call node profiler
+      log_node_diagnostics "$CONFIG_DIR"
 
       write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$(unique_id)" \
                           "$USE_UCB" "$UCB_C" "$INJECT" "$INJECT_BEST_PROB" "$PROBLEM_CLASS" \
