@@ -131,7 +131,7 @@ class SimpleFitnessLogger(Node):
                 SimplePosition,
                 topic,
                 lambda msg, agent=agent_id: self.global_pose_callback(msg, agent),
-                10,
+                100,
                 callback_group=cb_group
             )
             self.global_pose_subscribers.append(sub)
