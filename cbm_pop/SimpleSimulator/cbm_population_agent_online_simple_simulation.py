@@ -40,10 +40,11 @@ from enum import Enum
 from math import radians, cos, sin, asin, sqrt
 from std_msgs.msg import Bool
 
+
 class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
     Q_LEARNING = "Q-Learning"
-    DEEP_Q = "Deep-Q" # NEW: explicit DQN mode
+    DEEP_Q = "Deep-Q"  # NEW: explicit DQN mode
     DOUBLE_DEEP_Q = "Double-Deep-Q"
 
 
@@ -58,12 +59,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                  num_tsp_agents=10,
                  problem_size=15,
                  lock_mode: bool = False,
-                 preserve_next_task = False,
+                 preserve_next_task=False,
                  use_ucb: bool = False,
                  ucb_c: float = 1.0,
                  inject_best_on_cycle: bool = False,  # <--- NEW
                  inject_best_prob: float = 0.90,
-                 initialise_with_heuristic = True,
+                 initialise_with_heuristic=True,
                  replay_buffer_size=50,
                  tau=0.01,
                  batch_size=10,
@@ -117,10 +118,17 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             "added_covered": Counter(),
         })
 
+        # =========================
+        # TASK LOCKING (CHANGED)
+        # =========================
         self.is_task_locked = False
-        self.max_switches_before_lock = 5  # Track maximum allowed switches
-        self.switch_count = 0  # Counter for task switching
-        self.last_task = None  # Store the last assigned task
+        self.locked_task = None
+
+        # Only count A<->B oscillation (ABA pattern), not general switching
+        self.max_osc_before_lock = 5
+        self.osc_count = 0
+        self.prev_proposed_task = None  # t_{k-2}
+        self.last_proposed_task = None  # t_{k-1}
 
         self.current_task = None
         self.current_tasks = [-1] * num_tsp_agents
@@ -152,7 +160,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         self.coalition_best_agent = None
 
         # Operators and weights
-        self.intensifiers = [Operator.ONE_MOVE, Operator.TWO_SWAP, Operator.TWO_OPT_INTRA, Operator.NEAREST_K_RELOCATION]
+        self.intensifiers = [Operator.ONE_MOVE, Operator.TWO_SWAP, Operator.TWO_OPT_INTRA,
+                             Operator.NEAREST_K_RELOCATION]
         self.diversifiers = [
             Operator.BEST_COST_ROUTE_CROSSOVER,
             Operator.INTRA_DEPOT_REMOVAL,
@@ -160,8 +169,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             Operator.SINGLE_ACTION_REROUTING
         ]
         self.weight_matrix = WeightMatrix(len(self.intensifiers), len(self.diversifiers))
-
-
 
         self.population = None
         self.previous_experience = []
@@ -295,7 +302,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             '/environmental_representation',
             10
         )
-        self.environmental_representation_timer = self.create_timer(2, self.__environmental_representation_timer_callback,
+        self.environmental_representation_timer = self.create_timer(2,
+                                                                    self.__environmental_representation_timer_callback,
                                                                     callback_group=self.cb_group)
         self.solution_publisher_timer = self.create_timer(2, self.__regular_solution_publish_timer,
                                                           callback_group=self.cb_group)
@@ -329,12 +337,12 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         new_set = set(new_sol[0]) if new_sol else set()
 
         removed = sorted(list(old_set - new_set))
-        added   = sorted(list(new_set - old_set))
+        added = sorted(list(new_set - old_set))
 
         removed_uncovered = [t for t in removed if 0 <= t < self.problem.num_tasks and not self.is_covered[t]]
-        removed_covered   = [t for t in removed if 0 <= t < self.problem.num_tasks and self.is_covered[t]]
-        added_uncovered   = [t for t in added if 0 <= t < self.problem.num_tasks and not self.is_covered[t]]
-        added_covered     = [t for t in added if 0 <= t < self.problem.num_tasks and self.is_covered[t]]
+        removed_covered = [t for t in removed if 0 <= t < self.problem.num_tasks and self.is_covered[t]]
+        added_uncovered = [t for t in added if 0 <= t < self.problem.num_tasks and not self.is_covered[t]]
+        added_covered = [t for t in added if 0 <= t < self.problem.num_tasks and self.is_covered[t]]
 
         if removed or added:
             self.get_logger().warning(
@@ -505,6 +513,9 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     def __assign_next_task(self, solution):
         """
         Extracts and sets the current next task for the agent from a given solution.
+
+        CHANGED: task switching counter now ONLY tracks two-task oscillation (A<->B),
+        using ABA pattern detection, and uses an explicit locked_task.
         """
         try:
             if solution is None:
@@ -562,6 +573,27 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
             agent_tasks = ordered_task_list[start_index:end_index]
 
+            # -------------------------
+            # CHANGED: enforce lock
+            # -------------------------
+            if self.is_task_locked:
+                if self.locked_task is None:
+                    self.is_task_locked = False
+                elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
+                    # Locked task already covered -> unlock
+                    self.is_task_locked = False
+                    self.locked_task = None
+                    self.osc_count = 0
+                    self.prev_proposed_task = None
+                    self.last_proposed_task = None
+                else:
+                    self.current_task = self.locked_task
+                    if self.islogging:
+                        print(f"[LOCK] Staying locked on task {self.locked_task}")
+                    return
+
+            # Find first uncovered candidate in my segment
+            candidate = None
             for task in agent_tasks:
                 if task is None:
                     print(
@@ -571,45 +603,53 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     print(
                         f"[assign_next_task] Agent {self.agent_ID}: bad task index {task} (covered len {len(self.is_covered)})")
                     continue
-
-                old_task = self.current_task
                 if not self.is_covered[task]:
-                    # If already locked, stay on the locked task
-                    if self.is_task_locked:
-                        print(f"Still locked on task {task}")
-                        return
+                    candidate = task
+                    break
 
-                    # Track switching behaviour
-                    if self.last_task == task and task != self.current_task:
-                        self.switch_count += 1
-                    else:
-                        self.switch_count = 0  # Reset if task changed
+            if candidate is None:
+                self.current_task = None
+                return
 
-                    # Check for locking condition
-                    if self.switch_count >= self.max_switches_before_lock:
-                        print(f"Locking on task {task} after {self.switch_count} switches")
-                        self.current_task = task
-                        self.is_task_locked = True
-                    else:
-                        self.current_task = task
+            # -------------------------
+            # CHANGED: ABA oscillation-only counter
+            # Increment only if candidate == t_{k-2} and candidate != t_{k-1}
+            # -------------------------
+            if self.prev_proposed_task is not None and self.last_proposed_task is not None:
+                is_ABA = (candidate == self.prev_proposed_task) and (candidate != self.last_proposed_task)
+                if is_ABA:
+                    self.osc_count += 1
+                else:
+                    self.osc_count = 0  # only care about 2-task oscillation
 
-                    if self.current_task != old_task:
-                        self.last_task = old_task
-                    if self.islogging:
-                        print(f"Current Task is {self.current_task}")
-                    return
-            self.current_task = None
+            # shift history
+            self.prev_proposed_task = self.last_proposed_task
+            self.last_proposed_task = candidate
+
+            # lock if too many ABA bounces
+            if self.osc_count >= self.max_osc_before_lock:
+                print(f"[LOCK] Locking on task {candidate} after {self.osc_count} ABA bounces")
+                self.current_task = candidate
+                self.is_task_locked = True
+                self.locked_task = candidate
+                return
+
+            # normal assignment
+            self.current_task = candidate
+            if self.islogging:
+                print(f"Current Task is {self.current_task}")
+            return
 
         except Exception as ex:
             try:
                 dbg = {
                     "agent_id": self.agent_ID,
                     "alloc_len": len(solution[1]) if (
-                                solution and isinstance(solution, (tuple, list)) and len(solution) > 1 and solution[
-                            1] is not None) else "n/a",
+                            solution and isinstance(solution, (tuple, list)) and len(solution) > 1 and solution[
+                        1] is not None) else "n/a",
                     "ordered_len": len(solution[0]) if (
-                                solution and isinstance(solution, (tuple, list)) and len(solution) > 0 and solution[
-                            0] is not None) else "n/a",
+                            solution and isinstance(solution, (tuple, list)) and len(solution) > 0 and solution[
+                        0] is not None) else "n/a",
                 }
             except Exception:
                 dbg = {"agent_id": self.agent_ID, "alloc_len": "err", "ordered_len": "err"}
@@ -663,7 +703,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         elements_before_best = self.previous_experience[:idx_min + 1] if idx_min != -1 else []
         pairs = {(cond, int(op_col)) for cond, op_col, _ in elements_before_best}
         for row, col in pairs:
-            self.weight_matrix.weights[row][col] += 1 if self.best_coalition_improved else 1*self.eta
+            self.weight_matrix.weights[row][col] += 1 if self.best_coalition_improved else 1 * self.eta
         if self.islogging:
             print(f"weights: {self.weight_matrix.weights}")
         return self.weight_matrix.weights
@@ -759,7 +799,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 print(f"current tasks: {self.current_tasks}")
             # Optional: resolve head clash by yielding if we’re worse
             if msg.agent_id != self.agent_ID and msg.current_task == self.current_task and self.current_task is not None:
-                print(f"Resolving current task conflict: Agent ID: {self.agent_ID}, My current task: {self.current_task}, current tasks: {self.current_tasks}")
+                print(
+                    f"Resolving current task conflict: Agent ID: {self.agent_ID}, My current task: {self.current_task}, current tasks: {self.current_tasks}")
                 my = self.problem.current_robot_cost_matrix[self.agent_ID][self.current_task]
                 theirs = self.problem.current_robot_cost_matrix[msg.agent_id][self.current_task]
                 if theirs < my:
@@ -810,7 +851,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             self.get_logger().info("Coverage Complete — shutting down in 5 seconds...")
             # One-shot timer to trigger shutdown (not destroy) after 5s
             self.create_timer(5.0, lambda: rclpy.shutdown())
-
 
     # --- Helpers ---
 
@@ -900,7 +940,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             cand
         )
         cur_f = self._fitness(cur,
-        ) if cur else float("inf")
+                              ) if cur else float("inf")
 
         if not cand or not cand[0]:
             if self.islogging:
@@ -953,7 +993,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             if msg:
                 self.robot_poses[agent] = (msg.x_position, msg.y_position)
 
-            if all(pose is not None for pose in self.robot_poses) and self.is_loop_started is False and self.is_all_poses is False:
+            if all(pose is not None for pose in
+                   self.robot_poses) and self.is_loop_started is False and self.is_all_poses is False:
                 self.is_all_poses = True
                 self.problem.update_robot_cost_matrix(self.robot_poses)
                 self.problem.initialize_robot_initial_pose_cost_matrix(self.initial_robot_poses)
@@ -984,7 +1025,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     if self.is_task_locked:
                         print(f"Unlocking task {self.current_task} — coverage complete")
                         self.is_task_locked = False
-                        self.switch_count = 0
+                        self.locked_task = None
+                        self.osc_count = 0
+                        self.prev_proposed_task = None
+                        self.last_proposed_task = None
                         self.__assign_next_task(self.coalition_best_solution)
                     self.__assign_next_task(self.coalition_best_solution)
 
@@ -1034,6 +1078,17 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         # Set the task as Covered
         self.is_covered[covered_task] = True
 
+        # -------------------------
+        # CHANGED: unlock if locked task got covered by anyone
+        # -------------------------
+        if self.is_task_locked and self.locked_task == covered_task:
+            print(f"[LOCK] Locked task {covered_task} got covered — unlocking")
+            self.is_task_locked = False
+            self.locked_task = None
+            self.osc_count = 0
+            self.prev_proposed_task = None
+            self.last_proposed_task = None
+
         # Publish the Coverage List with the newly covered task
         if not self.am_i_failed:
             rep = EnvironmentalRepresentation()
@@ -1065,7 +1120,7 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
             # If the covering robot is known
             removed = False
-            #if covered_by is not None and 0 <= covered_by < len(new_alloc) and new_alloc[covered_by] > 0:
+            # if covered_by is not None and 0 <= covered_by < len(new_alloc) and new_alloc[covered_by] > 0:
             #    s, e = _seg_bounds(new_alloc, covered_by)
             #    try:
             #        # get index of covered task
@@ -1217,7 +1272,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         """
         Publishes the coalition best solution.
         """
-        if self.current_task:
+        # -------------------------
+        # CHANGED: allow current_task == 0
+        # -------------------------
+        if self.current_task is not None:
             current_task = CurrentTask()
             current_task.agent_id = self.agent_ID
             current_task.current_task = self.current_task
@@ -1559,7 +1617,8 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
 
     def _fitness(self, sol):
         """Uniform fitness wrapper that respects lock_mode."""
-        if sol is None or self.problem.current_robot_cost_matrix is None or len(self.problem.current_robot_cost_matrix) < self.num_tsp_agents:
+        if sol is None or self.problem.current_robot_cost_matrix is None or len(
+                self.problem.current_robot_cost_matrix) < self.num_tsp_agents:
             return float("inf")
         if self.lock_mode:
             return SimpleFitness.fitness_function_locked_tasks(sol, self.problem, self.current_tasks)
@@ -1776,10 +1835,11 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     def unpurge_agent(self, agent_id):
         print(f"Reviving Agent {agent_id}...")
         # Mark agent as revived
-        self.failed_agents[agent_id ] = False
+        self.failed_agents[agent_id] = False
         self.purged_agents[agent_id] = False
         self.agents_to_revive[agent_id] = False
         self.finished_robots[agent_id] = False
+
         # Function to insert an empty path at the right position
         def reintegrate_agent(solution):
             if solution is None:
@@ -1818,7 +1878,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                     self.get_logger().warning(
                         f"(agent_{self.agent_ID}) Agent {agent_id} has not sent an update for {current_time - last_time:.2f} seconds.")
 
-
     def run_step(self):
         """
         A single step of the `run` method, executed periodically by the ROS2 timer.
@@ -1836,7 +1895,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 self.current_solution = self.__remove_covered_tasks_from_solution(self.current_solution)
             if self.coalition_best_solution:
                 self.coalition_best_solution = self.__remove_covered_tasks_from_solution(self.coalition_best_solution)
-
 
             if self.failed_agents != self.purged_agents:
                 print("Purging agent")
@@ -1857,7 +1915,6 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
             #         self.agent_ID = self.agent_ID + 1
             #     self.unpurge_agent(self.agent_to_revive)
             #     self.agent_to_revive = None
-
 
             if self.__stopping_criterion(self.iteration_count):
                 self.run_timer.cancel()
@@ -1915,11 +1972,10 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
                 print("Something went wrong with applying the operator and resulted in a None.")
 
 
-
-
 # Deneme
 
 import concurrent.futures
+
 
 def run_with_timeout(func, args=(), kwargs=None, timeout=1.0):
     """
@@ -1932,6 +1988,7 @@ def run_with_timeout(func, args=(), kwargs=None, timeout=1.0):
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             return None
+
 
 import sys, traceback, signal
 import rclpy
@@ -1948,12 +2005,14 @@ def main(args=None):
     os.environ.setdefault("PYTHONASYNCIODEBUG", "1")
     try:
         loop = asyncio.get_event_loop()
+
         def _asyncio_exc_handler(loop, context):
             msg = context.get("message", "asyncio exception")
             exc = context.get("exception")
             print(f"[ASYNCIO-EXC] {msg}", file=sys.stderr)
             if exc:
                 traceback.print_exception(type(exc), exc, exc.__traceback__)
+
         loop.set_exception_handler(_asyncio_exc_handler)
     except Exception:
         pass
@@ -1961,9 +2020,11 @@ def main(args=None):
     def _thread_excepthook(args: threading.ExceptHookArgs):
         print(f"[THREAD-EXC:{args.thread.name}] {args.exc_type.__name__}: {args.exc_value}", file=sys.stderr)
         traceback.print_tb(args.exc_traceback)
+
     threading.excepthook = _thread_excepthook
 
     PKG_HINTS = ("cbm_pop", "SimpleSimulator")
+
     def print_root_cause(e: BaseException):
         frames = list(traceback.walk_tb(e.__traceback__))
         chosen = None
@@ -2015,21 +2076,21 @@ def main(args=None):
     for k, v in params.items():
         temp_node.declare_parameter(k, v)
 
-    agent_id        = temp_node.get_parameter("agent_id").value
-    runtime         = temp_node.get_parameter("runtime").value
+    agent_id = temp_node.get_parameter("agent_id").value
+    runtime = temp_node.get_parameter("runtime").value
     learning_method = temp_node.get_parameter("learning_method").value
-    lr              = temp_node.get_parameter("lr").value
-    gamma_decay     = temp_node.get_parameter("gamma_decay").value
+    lr = temp_node.get_parameter("lr").value
+    gamma_decay = temp_node.get_parameter("gamma_decay").value
     positive_reward = temp_node.get_parameter("positive_reward").value
     negative_reward = temp_node.get_parameter("negative_reward").value
-    num_tsp_agents  = temp_node.get_parameter("num_tsp_agents").value
-    problem_size    = temp_node.get_parameter("problem_size").value
-    lock_mode       = temp_node.get_parameter("lock_mode").value
+    num_tsp_agents = temp_node.get_parameter("num_tsp_agents").value
+    problem_size = temp_node.get_parameter("problem_size").value
+    lock_mode = temp_node.get_parameter("lock_mode").value
     preserve_next_task = temp_node.get_parameter("preserve_next_task").value
-    eta             = temp_node.get_parameter("eta").value
-    rho             = temp_node.get_parameter("rho").value
-    use_ucb         = temp_node.get_parameter("use_ucb").value
-    ucb_c           = temp_node.get_parameter("ucb_c").value
+    eta = temp_node.get_parameter("eta").value
+    rho = temp_node.get_parameter("rho").value
+    use_ucb = temp_node.get_parameter("use_ucb").value
+    ucb_c = temp_node.get_parameter("ucb_c").value
     inject_best_on_cycle = temp_node.get_parameter("inject_best_on_cycle").value
     inject_best_prob = temp_node.get_parameter("inject_best_prob").value
     initialise_with_heuristic = temp_node.get_parameter("initialise_with_heuristic").value
@@ -2062,6 +2123,7 @@ def main(args=None):
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 
     shutdown_reason = {"value": None}
+
     def begin_shutdown(reason: str):
         if shutdown_reason["value"] is None:
             shutdown_reason["value"] = reason
@@ -2083,7 +2145,7 @@ def main(args=None):
                 except Exception:
                     pass
 
-    signal.signal(signal.SIGINT,  lambda *_: begin_shutdown("SIGINT"))
+    signal.signal(signal.SIGINT, lambda *_: begin_shutdown("SIGINT"))
     signal.signal(signal.SIGTERM, lambda *_: begin_shutdown("SIGTERM"))
 
     if runtime != -1:
@@ -2104,6 +2166,7 @@ def main(args=None):
             begin_shutdown("spin_returned")
         print(f"[MAIN] shutdown complete; reason={shutdown_reason['value']}")
         sys.exit(0)
+
 
 if __name__ == "__main__":
     main()
