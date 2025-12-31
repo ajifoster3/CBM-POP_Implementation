@@ -123,8 +123,9 @@ Problem Size:         {problem_size}
         )
 
         # -----------------------------
-        # Task-locking / oscillation state (NEW)
+        # Task-locking / oscillation state
         # Only increment counter for A<->B oscillation (ABA pattern).
+        # Also handle None-B-None (NEW requirement) to lock on B.
         # -----------------------------
         self.is_task_locked = False
         self.locked_task = None
@@ -331,7 +332,7 @@ Problem Size:         {problem_size}
         self.create_timer(5, self.check_stale_agents)
 
     # ---------------------------
-    # Task locking helpers (NEW)
+    # Task locking helpers
     # ---------------------------
 
     def _reset_task_lock_state(self):
@@ -343,10 +344,9 @@ Problem Size:         {problem_size}
 
     def _unlock_if_locked_task_covered(self, covered_task: int):
         if self.is_task_locked and self.locked_task == covered_task:
-            if self.islogging:
-                self.get_logger().info(
-                    f"[LOCK] unlocking because locked_task={covered_task} is now covered"
-                )
+            self.get_logger().info(
+                f"[LOCK] unlocking because locked_task={covered_task} is now covered"
+            )
             self._reset_task_lock_state()
 
     # ---------------------------
@@ -468,12 +468,15 @@ Problem Size:         {problem_size}
 
     # ------------------------------------------------------------
     # TASK ASSIGNMENT WITH TWO-TASK OSCILLATION LOCKING (UPDATED)
+    # Includes None-B-None locking on B (NEW)
     # ------------------------------------------------------------
     def __assign_next_task(self, solution):
         """
         Set this agent's next task from its segment.
-        Locking rule: increment oscillation counter ONLY on ABA pattern
-        (A<->B oscillation). Lock after max_osc_before_lock bounces.
+
+        Locking rules:
+        - Classic 2-task oscillation: A, B, A (ABA) -> counts a bounce; locks on A after threshold.
+        - NEW special case: None, B, None (ABA with A=None) -> counts a bounce; locks on B after threshold.
         """
         try:
             if solution is None:
@@ -507,75 +510,91 @@ Problem Size:         {problem_size}
                 return
 
             if num_tasks <= 0:
-                self.current_task = None
-                return
+                # still track None proposals for oscillation logic below
+                candidate = None
+                # fallthrough to oscillation logic
+            else:
+                start_index = sum(allocation_counts[: self.agent_ID])
+                end_index = start_index + num_tasks
 
-            start_index = sum(allocation_counts[: self.agent_ID])
-            end_index = start_index + num_tasks
+                if start_index < 0 or end_index > len(ordered_task_list):
+                    end_index = min(end_index, len(ordered_task_list))
+                    start_index = max(0, min(start_index, end_index))
 
-            if start_index < 0 or end_index > len(ordered_task_list):
-                end_index = min(end_index, len(ordered_task_list))
-                start_index = max(0, min(start_index, end_index))
+                agent_tasks = ordered_task_list[start_index:end_index]
 
-            agent_tasks = ordered_task_list[start_index:end_index]
+                # If locked: enforce it unless covered/invalid
+                if self.is_task_locked:
+                    if self.locked_task is None:
+                        self._reset_task_lock_state()
+                    elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
+                        self._reset_task_lock_state()
+                    else:
+                        self.current_task = self.locked_task
+                        return
 
-            # If locked: enforce it unless covered/invalid
-            if self.is_task_locked:
-                if self.locked_task is None:
-                    self._reset_task_lock_state()
-                elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
-                    self._reset_task_lock_state()
-                else:
-                    self.current_task = self.locked_task
-                    return
-
-            # Find first uncovered in this agent segment
-            candidate = None
-            for task in agent_tasks:
-                if task is None:
-                    continue
-                if not isinstance(task, (int, np.integer)):
-                    try:
-                        task = int(task)
-                    except Exception:
+                # Find first uncovered in this agent segment
+                candidate = None
+                for task in agent_tasks:
+                    if task is None:
                         continue
-                if task < 0 or task >= len(self.is_covered):
-                    continue
-                if not self.is_covered[task]:
-                    candidate = task
-                    break
+                    if not isinstance(task, (int, np.integer)):
+                        try:
+                            task = int(task)
+                        except Exception:
+                            continue
+                    if task < 0 or task >= len(self.is_covered):
+                        continue
+                    if not self.is_covered[task]:
+                        candidate = task
+                        break
 
-            if candidate is None:
-                self.current_task = None
-                return
+            # ------------------------------------------------------------
+            # ABA detection INCLUDING None-B-None and lock on B in that case
+            # ------------------------------------------------------------
+            lock_target = None
 
-            # Two-task oscillation detection: ABA pattern only
-            # increment only if candidate == t_{k-2} and candidate != t_{k-1}
-            if self.prev_proposed_task is not None and self.last_proposed_task is not None:
+            # General ABA: candidate == t_{k-2} and candidate != t_{k-1}
+            # Special: None-B-None => candidate is None, prev is None, last is B (not None)
+            if self.prev_proposed_task is not None or self.last_proposed_task is not None:
                 is_ABA = (candidate == self.prev_proposed_task) and (candidate != self.last_proposed_task)
-                if is_ABA:
+
+                is_none_B_none = (
+                    candidate is None
+                    and self.prev_proposed_task is None
+                    and self.last_proposed_task is not None
+                )
+
+                if is_none_B_none:
                     self.osc_count += 1
+                    lock_target = self.last_proposed_task  # lock on B (middle)
+                elif is_ABA:
+                    self.osc_count += 1
+                    lock_target = candidate  # lock on A (candidate)
                 else:
-                    # you requested: only deal with oscillating between two tasks,
-                    # so reset if it's not an ABA bounce
+                    # Only deal with oscillating between two states; reset otherwise
                     self.osc_count = 0
 
-            # shift history
+            # Shift history EVEN if candidate is None
             self.prev_proposed_task = self.last_proposed_task
             self.last_proposed_task = candidate
 
-            # lock if too many bounces
-            if self.osc_count >= self.max_osc_before_lock and not self.is_task_locked:
+            # Lock if too many bounces (only if lock_target is a real task id)
+            if (
+                lock_target is not None
+                and self.osc_count >= self.max_osc_before_lock
+                and not self.is_task_locked
+            ):
                 self.is_task_locked = True
-                self.locked_task = candidate
-                self.current_task = candidate
-                if self.islogging:
-                    self.get_logger().warning(
-                        f"[LOCK] locking on task={candidate} after osc_count={self.osc_count}"
-                    )
+                self.locked_task = int(lock_target)
+                self.current_task = int(lock_target)
+                self.get_logger().warning(
+                    f"[LOCK] locking on task={self.locked_task} after osc_count={self.osc_count} "
+                    f"(pattern={'None-B-None' if candidate is None else 'ABA'})"
+                )
                 return
 
-            # normal assignment
+            # Normal assignment (candidate can be None)
             self.current_task = candidate
             return
 
@@ -816,12 +835,11 @@ Problem Size:         {problem_size}
                 if agent == self.agent_ID and distance < 0.1:
                     self.__handle_covered_task(task)
 
-                    # If we were locked to this task, unlock (still fine to keep this)
+                    # If we were locked to this task, unlock
                     if self.is_task_locked:
-                        if self.islogging:
-                            self.get_logger().info(
-                                f"[LOCK] Unlocking after reaching task={task}"
-                            )
+                        self.get_logger().info(
+                            f"[LOCK] Unlocking after reaching task={task}"
+                        )
                         self._reset_task_lock_state()
 
                     self.__assign_next_task(self.coalition_best_solution)
@@ -861,7 +879,7 @@ Problem Size:         {problem_size}
         # Mark covered
         self.is_covered[covered_task] = True
 
-        # NEW: unlock if someone covers the locked task
+        # unlock if someone covers the locked task
         self._unlock_if_locked_task_covered(covered_task)
 
         # Publish coverage
@@ -1203,7 +1221,7 @@ Problem Size:         {problem_size}
             self.__mimetism_learning(self.received_weight_matrices, self.rho)
             self.received_weight_matrices = []
 
-        # injection block as in your code (kept simple)
+        # injection block
         try:
             if (
                 self.inject_best_on_cycle
@@ -1324,7 +1342,6 @@ Problem Size:         {problem_size}
         print(f"Agent {self.agent_ID} successfully revived and all timers restarted.")
 
     def purge_agent(self, purge_agent_true_id):
-        # (kept from your structure; not rewriting here)
         def update_solution(sol):
             if sol is None:
                 return None
@@ -1473,7 +1490,7 @@ Problem Size:         {problem_size}
 
 
 # ---------------------------
-# main() as you provided (kept)
+# main()
 # ---------------------------
 
 import concurrent.futures
