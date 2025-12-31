@@ -124,8 +124,7 @@ Problem Size:         {problem_size}
 
         # -----------------------------
         # Task-locking / oscillation state
-        # Only increment counter for A<->B oscillation (ABA pattern).
-        # Also handle None-B-None (NEW requirement) to lock on B.
+        # Increment counter for A<->B oscillation (ABA pattern).
         # -----------------------------
         self.is_task_locked = False
         self.locked_task = None
@@ -349,6 +348,11 @@ Problem Size:         {problem_size}
             )
             self._reset_task_lock_state()
 
+    def _remaining_uncovered_tasks(self):
+        if self.is_covered is None:
+            return []
+        return [i for i, cov in enumerate(self.is_covered) if not cov]
+
     # ---------------------------
     # Core methods
     # ---------------------------
@@ -467,8 +471,9 @@ Problem Size:         {problem_size}
             self.__assign_next_task(solution)
 
     # ------------------------------------------------------------
-    # TASK ASSIGNMENT WITH TWO-TASK OSCILLATION LOCKING (UPDATED)
-    # Includes None-B-None locking on B (NEW)
+    # TASK ASSIGNMENT WITH ABA OSCILLATION LOCKING (UPDATED)
+    # - Added endgame lock: if only 1 uncovered task remains and it is allocated
+    #   to this agent (based on current solution segment), lock it immediately.
     # ------------------------------------------------------------
     def __assign_next_task(self, solution):
         """
@@ -476,7 +481,8 @@ Problem Size:         {problem_size}
 
         Locking rules:
         - Classic 2-task oscillation: A, B, A (ABA) -> counts a bounce; locks on A after threshold.
-        - NEW special case: None, B, None (ABA with A=None) -> counts a bounce; locks on B after threshold.
+        - Endgame lock: if exactly 1 uncovered task remains (from EnvironmentalRepresentation merged state)
+          and that task is allocated to me in my segment, lock it immediately regardless of oscillation.
         """
         try:
             if solution is None:
@@ -509,10 +515,20 @@ Problem Size:         {problem_size}
                 self.current_task = None
                 return
 
+            # If locked: enforce it unless covered/invalid
+            if self.is_task_locked:
+                if self.locked_task is None:
+                    self._reset_task_lock_state()
+                elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
+                    self._reset_task_lock_state()
+                else:
+                    self.current_task = self.locked_task
+                    return
+
             if num_tasks <= 0:
-                # still track None proposals for oscillation logic below
+                # no tasks allocated to me
                 candidate = None
-                # fallthrough to oscillation logic
+                agent_tasks = []
             else:
                 start_index = sum(allocation_counts[: self.agent_ID])
                 end_index = start_index + num_tasks
@@ -523,14 +539,24 @@ Problem Size:         {problem_size}
 
                 agent_tasks = ordered_task_list[start_index:end_index]
 
-                # If locked: enforce it unless covered/invalid
-                if self.is_task_locked:
-                    if self.locked_task is None:
-                        self._reset_task_lock_state()
-                    elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
-                        self._reset_task_lock_state()
-                    else:
-                        self.current_task = self.locked_task
+                # -------------------------
+                # ENDGAME LOCK (NEW)
+                # -------------------------
+                remaining = self._remaining_uncovered_tasks()
+                if len(remaining) == 1:
+                    last_task = remaining[0]
+                    # only lock if this last task is actually in my segment
+                    if last_task in agent_tasks:
+                        if (not self.is_task_locked) or (self.locked_task != int(last_task)):
+                            self.is_task_locked = True
+                            self.locked_task = int(last_task)
+                            self.osc_count = 0
+                            self.prev_proposed_task = None
+                            self.last_proposed_task = None
+                            self.get_logger().warning(
+                                f"[LOCK-ENDGAME] Only 1 task remains ({last_task}) and it's allocated to me -> locking."
+                            )
+                        self.current_task = int(last_task)
                         return
 
                 # Find first uncovered in this agent segment
@@ -550,25 +576,13 @@ Problem Size:         {problem_size}
                         break
 
             # ------------------------------------------------------------
-            # ABA detection INCLUDING None-B-None and lock on B in that case
+            # ABA detection (classic) — increments only on ABA pattern
             # ------------------------------------------------------------
             lock_target = None
 
-            # General ABA: candidate == t_{k-2} and candidate != t_{k-1}
-            # Special: None-B-None => candidate is None, prev is None, last is B (not None)
             if self.prev_proposed_task is not None or self.last_proposed_task is not None:
                 is_ABA = (candidate == self.prev_proposed_task) and (candidate != self.last_proposed_task)
-
-                is_none_B_none = (
-                    candidate is None
-                    and self.prev_proposed_task is None
-                    and self.last_proposed_task is not None
-                )
-
-                if is_none_B_none:
-                    self.osc_count += 1
-                    lock_target = self.last_proposed_task  # lock on B (middle)
-                elif is_ABA:
+                if is_ABA:
                     self.osc_count += 1
                     lock_target = candidate  # lock on A (candidate)
                 else:
@@ -589,8 +603,7 @@ Problem Size:         {problem_size}
                 self.locked_task = int(lock_target)
                 self.current_task = int(lock_target)
                 self.get_logger().warning(
-                    f"[LOCK] locking on task={self.locked_task} after osc_count={self.osc_count} "
-                    f"(pattern={'None-B-None' if candidate is None else 'ABA'})"
+                    f"[LOCK] locking on task={self.locked_task} after osc_count={self.osc_count} (pattern=ABA)"
                 )
                 return
 
