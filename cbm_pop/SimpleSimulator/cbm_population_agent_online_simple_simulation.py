@@ -78,7 +78,14 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
     ):
         super().__init__(node_name)
 
-        self.islogging = False
+        self.islogging = True
+
+        # -----------------------------
+        # Logging controls (NEW)
+        # -----------------------------
+        self.log_task_assign = True
+        self.log_task_assign_level = "INFO"  # "DEBUG" | "INFO" | "WARN"
+        self._assign_seq = 0
 
         settings_str = f"""
 ================= Agent Configuration =================
@@ -124,15 +131,14 @@ Problem Size:         {problem_size}
 
         # -----------------------------
         # Task-locking / oscillation state
-        # Increment counter for A<->B oscillation (ABA pattern).
         # -----------------------------
         self.is_task_locked = False
         self.locked_task = None
 
-        self.max_osc_before_lock = 5  # how many ABA bounces before lock
-        self.osc_count = 0            # increments only on ABA pattern
-        self.prev_proposed_task = None  # t_{k-2}
-        self.last_proposed_task = None  # t_{k-1}
+        self.max_osc_before_lock = 5
+        self.osc_count = 0
+        self.prev_proposed_task = None
+        self.last_proposed_task = None
 
         # Current task and peer heads
         self.current_task = None
@@ -269,8 +275,11 @@ Problem Size:         {problem_size}
         for rid in range(self.num_tsp_agents):
             topic = f"/central_control/uas_{rid}/global_pose"
             sub = self.create_subscription(
-                SimplePosition, topic, lambda msg: self.__global_pose_callback(msg), 10,
-                callback_group=self.cb_group
+                SimplePosition,
+                topic,
+                lambda msg: self.__global_pose_callback(msg),
+                10,
+                callback_group=self.cb_group,
             )
             self.global_pose_subscribers.append(sub)
 
@@ -284,7 +293,10 @@ Problem Size:         {problem_size}
             FinishedCoverage, f"/central_control/finished_coverage", 10
         )
         self.finished_coverage_sub = self.create_subscription(
-            FinishedCoverage, f"/central_control/finished_coverage", self.__finished_coverage_callback, 10
+            FinishedCoverage,
+            f"/central_control/finished_coverage",
+            self.__finished_coverage_callback,
+            10,
         )
 
         # Timers
@@ -330,9 +342,49 @@ Problem Size:         {problem_size}
 
         self.create_timer(5, self.check_stale_agents)
 
+        # -----------------------------
+        # Next-task reassignment cooldown
+        # -----------------------------
+        self.reassign_cooldown_sec = 0.5
+        self._last_task_reassign_time = 0.0
+
+    # ---------------------------
+    # Logging helper (NEW)
+    # ---------------------------
+    def _log_assign(self, level: str, msg: str):
+        """
+        Uniform logging for task assignment / locking.
+        """
+        if not getattr(self, "log_task_assign", True):
+            return
+
+        lg = self.get_logger()
+        level = (level or "INFO").upper()
+        prefix = f"[ASSIGN][agent={self.agent_ID}][seq={getattr(self, '_assign_seq', -1)}] "
+
+        if level == "DEBUG":
+            lg.debug(prefix + msg)
+        elif level in ("WARN", "WARNING"):
+            lg.warning(prefix + msg)
+        elif level == "ERROR":
+            lg.error(prefix + msg)
+        else:
+            lg.info(prefix + msg)
+
     # ---------------------------
     # Task locking helpers
     # ---------------------------
+    def _task_valid_uncovered(self, t):
+        try:
+            if t is None:
+                return False
+            ti = int(t)
+            return 0 <= ti < len(self.is_covered) and (not self.is_covered[ti])
+        except Exception:
+            return False
+
+    def _cooldown_allows_reassign(self):
+        return (time() - self._last_task_reassign_time) >= self.reassign_cooldown_sec
 
     def _reset_task_lock_state(self):
         self.is_task_locked = False
@@ -343,9 +395,7 @@ Problem Size:         {problem_size}
 
     def _unlock_if_locked_task_covered(self, covered_task: int):
         if self.is_task_locked and self.locked_task == covered_task:
-            self.get_logger().info(
-                f"[LOCK] unlocking because locked_task={covered_task} is now covered"
-            )
+            self._log_assign("WARN", f"UNLOCK locked_task={covered_task} was covered -> reset lock")
             self._reset_task_lock_state()
 
     def _remaining_uncovered_tasks(self):
@@ -356,7 +406,6 @@ Problem Size:         {problem_size}
     # ---------------------------
     # Core methods
     # ---------------------------
-
     def _active_agent_indices(self):
         return [i for i in range(self.num_tsp_agents) if not self.purged_agents[i]]
 
@@ -420,7 +469,9 @@ Problem Size:         {problem_size}
                     donors.discard(src)
                     continue
                 dest_xy = self.robot_poses[a]
-                k, task_to_move = min(enumerate(src_route), key=lambda it: _dist_xy(it[1], dest_xy))
+                k, task_to_move = min(
+                    enumerate(src_route), key=lambda it: _dist_xy(it[1], dest_xy)
+                )
                 src_route.pop(k)
                 per_agent_routes[a].append(task_to_move)
                 if len(per_agent_routes[src]) <= 1:
@@ -458,7 +509,9 @@ Problem Size:         {problem_size}
             for task in tasks:
                 chosen_agent = random.randint(0, self.num_tsp_agents - 1)
                 agent_assignments[chosen_agent].append(task)
-            ordered_task_list = [task for agent_tasks in agent_assignments for task in agent_tasks]
+            ordered_task_list = [
+                task for agent_tasks in agent_assignments for task in agent_tasks
+            ]
             task_allocation_counts = [len(agent_tasks) for agent_tasks in agent_assignments]
             population.append((ordered_task_list, task_allocation_counts))
         print("Generated random population")
@@ -471,129 +524,166 @@ Problem Size:         {problem_size}
             self.__assign_next_task(solution)
 
     # ------------------------------------------------------------
-    # TASK ASSIGNMENT WITH ABA OSCILLATION LOCKING (UPDATED)
-    # - Added endgame lock: if only 1 uncovered task remains and it is allocated
-    #   to this agent (based on current solution segment), lock it immediately.
+    # TASK ASSIGNMENT WITH ABA OSCILLATION LOCKING + COOLDOWN + LOGGING (UPDATED)
     # ------------------------------------------------------------
-    def __assign_next_task(self, solution):
+    def __assign_next_task(self, solution, force: bool = False):
         """
         Set this agent's next task from its segment.
 
-        Locking rules:
-        - Classic 2-task oscillation: A, B, A (ABA) -> counts a bounce; locks on A after threshold.
-        - Endgame lock: if exactly 1 uncovered task remains (from EnvironmentalRepresentation merged state)
-          and that task is allocated to me in my segment, lock it immediately regardless of oscillation.
+        - Cooldown: if current_task is still valid+uncovered, and cooldown not elapsed, skip reassignment.
+        - ABA lock: detect A,B,A and lock on A after max_osc_before_lock.
+        - Endgame lock: if only 1 uncovered task remains and it's allocated to me, lock immediately.
+        - Logging: detailed trace of decisions, ABA, and locking/unlocking.
         """
+        self._assign_seq = getattr(self, "_assign_seq", 0) + 1
+
         try:
+            now = time()
+
+            # Cooldown gate (only when not locked and not forced)
+            if (not force) and (not self.is_task_locked):
+                if self._task_valid_uncovered(self.current_task) and (not self._cooldown_allows_reassign()):
+                    dt = now - self._last_task_reassign_time
+                    self._log_assign(
+                        self.log_task_assign_level,
+                        f"cooldown-skip dt={dt:.3f}s < {self.reassign_cooldown_sec:.3f}s "
+                        f"keeping current_task={self.current_task}"
+                    )
+                    return
+
             if solution is None:
+                self._log_assign("WARN", "solution=None -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
             if not isinstance(solution, (tuple, list)) or len(solution) < 2:
+                self._log_assign("WARN", f"solution malformed ({type(solution)}) -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
             ordered_task_list, allocation_counts = solution
 
             if ordered_task_list is None or allocation_counts is None:
+                self._log_assign("WARN", "solution missing order/alloc -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
             if not isinstance(allocation_counts, (list, tuple)):
+                self._log_assign("WARN", f"allocations not list/tuple ({type(allocation_counts)}) -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
             if self.agent_ID < 0 or self.agent_ID >= len(allocation_counts):
                 raise ValueError(f"Invalid robot_id {self.agent_ID} for alloc length {len(allocation_counts)}")
 
             if self.is_covered is None:
+                self._log_assign("WARN", "is_covered=None -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
             num_tasks = allocation_counts[self.agent_ID]
             if not isinstance(num_tasks, int):
+                self._log_assign("WARN", f"num_tasks not int ({num_tasks}) -> current_task=None")
                 self.current_task = None
+                self._last_task_reassign_time = now
                 return
 
-            # If locked: enforce it unless covered/invalid
+            # Locked enforcement (unless locked task is now covered/invalid)
             if self.is_task_locked:
                 if self.locked_task is None:
+                    self._log_assign("WARN", "is_task_locked=True but locked_task=None -> reset lock")
                     self._reset_task_lock_state()
                 elif 0 <= self.locked_task < len(self.is_covered) and self.is_covered[self.locked_task]:
+                    self._log_assign("INFO", f"locked_task={self.locked_task} already covered -> reset lock")
                     self._reset_task_lock_state()
                 else:
-                    self.current_task = self.locked_task
+                    self.current_task = int(self.locked_task)
+                    self._last_task_reassign_time = now
+                    self._log_assign("INFO", f"locked-enforce -> current_task={self.current_task} (force={force})")
                     return
 
+            # Segment extraction
             if num_tasks <= 0:
-                # no tasks allocated to me
                 candidate = None
                 agent_tasks = []
+                self._log_assign("DEBUG", "no tasks allocated to me (num_tasks<=0)")
             else:
                 start_index = sum(allocation_counts[: self.agent_ID])
                 end_index = start_index + num_tasks
 
+                # bounds safety
                 if start_index < 0 or end_index > len(ordered_task_list):
                     end_index = min(end_index, len(ordered_task_list))
                     start_index = max(0, min(start_index, end_index))
 
                 agent_tasks = ordered_task_list[start_index:end_index]
 
-                # -------------------------
-                # ENDGAME LOCK (NEW)
-                # -------------------------
+                self._log_assign(
+                    "DEBUG",
+                    f"segment bounds start={start_index} end={end_index} "
+                    f"num_tasks={num_tasks} seg_len={len(agent_tasks)} force={force}"
+                )
+
+                # Endgame lock
                 remaining = self._remaining_uncovered_tasks()
                 if len(remaining) == 1:
-                    last_task = remaining[0]
-                    # only lock if this last task is actually in my segment
+                    last_task = int(remaining[0])
                     if last_task in agent_tasks:
-                        if (not self.is_task_locked) or (self.locked_task != int(last_task)):
+                        if (not self.is_task_locked) or (self.locked_task != last_task):
                             self.is_task_locked = True
-                            self.locked_task = int(last_task)
+                            self.locked_task = last_task
                             self.osc_count = 0
                             self.prev_proposed_task = None
                             self.last_proposed_task = None
-                            self.get_logger().warning(
-                                f"[LOCK-ENDGAME] Only 1 task remains ({last_task}) and it's allocated to me -> locking."
-                            )
-                        self.current_task = int(last_task)
+                            self._log_assign("WARN", f"LOCK-ENDGAME taking lock on last_task={last_task} (in my segment)")
+                        self.current_task = last_task
+                        self._last_task_reassign_time = now
+                        self._log_assign("INFO", f"assign(endgame) -> current_task={self.current_task}")
                         return
+                    else:
+                        self._log_assign("DEBUG", f"endgame: last_task={last_task} not in my segment -> no lock")
 
-                # Find first uncovered in this agent segment
+                # Find first uncovered in segment
                 candidate = None
-                for task in agent_tasks:
-                    if task is None:
+                for t in agent_tasks:
+                    try:
+                        ti = int(t)
+                    except Exception:
                         continue
-                    if not isinstance(task, (int, np.integer)):
-                        try:
-                            task = int(task)
-                        except Exception:
-                            continue
-                    if task < 0 or task >= len(self.is_covered):
-                        continue
-                    if not self.is_covered[task]:
-                        candidate = task
+                    if 0 <= ti < len(self.is_covered) and (not self.is_covered[ti]):
+                        candidate = ti
                         break
 
-            # ------------------------------------------------------------
-            # ABA detection (classic) — increments only on ABA pattern
-            # ------------------------------------------------------------
+            # ABA detection
             lock_target = None
+            prev2 = self.prev_proposed_task
+            prev1 = self.last_proposed_task
 
-            if self.prev_proposed_task is not None or self.last_proposed_task is not None:
-                is_ABA = (candidate == self.prev_proposed_task) and (candidate != self.last_proposed_task)
-                if is_ABA:
+            if (prev2 is not None) or (prev1 is not None):
+                is_ABA = (candidate == prev2) and (candidate != prev1)
+                if is_ABA and candidate is not None:
                     self.osc_count += 1
-                    lock_target = candidate  # lock on A (candidate)
+                    lock_target = candidate
+                    self._log_assign(
+                        "INFO",
+                        f"ABA-detect prev2={prev2} prev1={prev1} cand={candidate} "
+                        f"osc_count={self.osc_count}/{self.max_osc_before_lock}"
+                    )
                 else:
-                    # Only deal with oscillating between two states; reset otherwise
+                    if self.osc_count != 0:
+                        self._log_assign("DEBUG", f"ABA-reset prev2={prev2} prev1={prev1} cand={candidate} osc_count->0")
                     self.osc_count = 0
 
-            # Shift history EVEN if candidate is None
+            # Shift history even if candidate is None
             self.prev_proposed_task = self.last_proposed_task
             self.last_proposed_task = candidate
 
-            # Lock if too many bounces (only if lock_target is a real task id)
+            # Lock if threshold reached
             if (
                 lock_target is not None
                 and self.osc_count >= self.max_osc_before_lock
@@ -602,17 +692,27 @@ Problem Size:         {problem_size}
                 self.is_task_locked = True
                 self.locked_task = int(lock_target)
                 self.current_task = int(lock_target)
-                self.get_logger().warning(
-                    f"[LOCK] locking on task={self.locked_task} after osc_count={self.osc_count} (pattern=ABA)"
+                self._last_task_reassign_time = now
+                self._log_assign(
+                    "WARN",
+                    f"LOCK-ABA taking lock on task={self.locked_task} after osc_count={self.osc_count} "
+                    f"(prev2={prev2}, prev1={prev1}, cand={candidate})"
                 )
                 return
 
-            # Normal assignment (candidate can be None)
+            # Normal assignment
+            old = self.current_task
             self.current_task = candidate
+            self._last_task_reassign_time = now
+
+            self._log_assign(
+                self.log_task_assign_level,
+                f"assign(normal) old={old} -> new={self.current_task} (cand={candidate}, force={force}, locked={self.is_task_locked})"
+            )
             return
 
         except Exception as ex:
-            print(f"Agent: {self.agent_ID} has {ex} while assigning tasks.")
+            self._log_assign("ERROR", f"exception while assigning: {type(ex).__name__}: {ex}")
             print(traceback.format_exc())
             self.current_task = None
 
@@ -729,7 +829,12 @@ Problem Size:         {problem_size}
                 my = self.problem.current_robot_cost_matrix[self.agent_ID][self.current_task]
                 theirs = self.problem.current_robot_cost_matrix[msg.agent_id][self.current_task]
                 if theirs < my:
-                    self.__assign_next_task(self.coalition_best_solution)
+                    self._log_assign(
+                        "INFO",
+                        f"conflict: peer={msg.agent_id} also on task={self.current_task} "
+                        f"(theirs={theirs:.3f} < mine={my:.3f}) -> reassign(force=True)"
+                    )
+                    self.__assign_next_task(self.coalition_best_solution, force=True)
         except Exception as e:
             print(
                 f"[ERROR] Exception in current task update callback: {type(e).__name__}: {e}\n{traceback.format_exc()}"
@@ -741,10 +846,6 @@ Problem Size:         {problem_size}
             self._shutdown_timer_set = True
             self.get_logger().info("Coverage Complete — shutting down in 5 seconds...")
             self.create_timer(5.0, lambda: rclpy.shutdown())
-
-    def __active_agent_index(self):
-        active_indices = [i for i, purged in enumerate(self.purged_agents) if not purged]
-        return active_indices.index(self.agent_ID)
 
     def __segment_bounds(self, allocations, agent_idx):
         start = sum(allocations[:agent_idx])
@@ -850,12 +951,11 @@ Problem Size:         {problem_size}
 
                     # If we were locked to this task, unlock
                     if self.is_task_locked:
-                        self.get_logger().info(
-                            f"[LOCK] Unlocking after reaching task={task}"
-                        )
+                        self._log_assign("WARN", f"UNLOCK reached locked task={task} -> reset lock")
                         self._reset_task_lock_state()
 
-                    self.__assign_next_task(self.coalition_best_solution)
+                    # Force reassign after completing a task (fixes your earlier 'true' bug)
+                    self.__assign_next_task(self.coalition_best_solution, force=True)
 
             if self.coalition_best_solution is not None and self.coalition_best_solution[1][self.agent_ID] == 0:
                 x = msg.x_position
@@ -1350,7 +1450,7 @@ Problem Size:         {problem_size}
             Solution, "best_solution", self.__solution_update_callback, 10
         )
 
-        self.__assign_next_task(self.coalition_best_solution)
+        self.__assign_next_task(self.coalition_best_solution, force=True)
         print(self.current_task)
         print(f"Agent {self.agent_ID} successfully revived and all timers restarted.")
 
@@ -1362,7 +1462,6 @@ Problem Size:         {problem_size}
             if not allocations:
                 return (order, allocations)
 
-            idx_in_alloc = len(allocations) - 1
             start_idx = sum(allocations[:-1])
             count = allocations[-1]
             end_idx = start_idx + count
