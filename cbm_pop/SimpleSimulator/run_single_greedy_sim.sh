@@ -1,18 +1,38 @@
 #!/bin/bash
+# Greedy runner (robust under `set -u`), with:
+# - ROS env sourcing with +u
+# - PID globals initialised before any trap uses them
+# - startup barrier waiting for all agents to print AGENT_INIT_MSG
+# - safe associative-array lookups (fixes "unbound variable" crashes)
+# - retry-on-startup-failure + stuck detection
+#
+# Usage:
+#   chmod +x run_simple_sim.sh
+#   ./run_simple_sim.sh --agents 10 --problem-size 15 --problem-class Simple_Grid
+#   ./run_simple_sim.sh --enable-kill true --kill-thresholds "0.2 0.3" --num-to-kill 3
+#   ./run_simple_sim.sh --enable-revive true --revive-threshold "0.4 0.6"
 
-# --- allow unset vars while sourcing ROS/your overlay ---
+# --- strict mode, but allow unset vars while sourcing ROS/overlay ---
 set -e
 set -o pipefail
 set +u
 source /opt/ros/humble/setup.bash
 source ../../../../install/local_setup.bash
-# --- restore nounset after sourcing ---
 set -u
+
+# ===== nounset (-u) safety: init globals BEFORE any trap/function can reference them =====
+LOGGER_PID=""
+SIM_PID=""
+AGENT_PIDS=()
+FIRST_DEAD_PID=""
+
+declare -A PID_ROLE
+declare -A PID_LOG
 
 # ===== Better diagnostics =====
 export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
 export RCUTILS_LOGGING_USE_STDOUT=1
-export RCUTILS_LOGGING_BUFFERED_STREAM=1
+export RCUTILS_LOGGING_BUFFERED_STREAM=0   # force immediate flush (more reliable on slow FS)
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONASYNCIODEBUG=1
@@ -35,23 +55,24 @@ NUM_RUNS=200
 
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
-# UPDATED: Executable for the Greedy Agent
 AGENT_EXECUTABLE="greedy_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 
+# Startup readiness gate:
+# Match a log line your greedy agent prints very early, e.g. "Greedy Agent 3 Initialized..."
+AGENT_INIT_MSG="Greedy Agent"
+AGENT_STARTUP_TIMEOUT=30  # seconds to wait for all agents to init
+
 RUNTIME=-1.0
-TIMEOUT_SECONDS=300 # 5 minutes
+TIMEOUT_SECONDS=300  # 5 minutes
 
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 
 # ===== Parse CLI (short + long) =====
-# Removed RL specific args (lr, gamma, rho, lock, etc)
 PARSED=$(getopt -o p:a:V: \
   -l p:,problem-size:,a:,agents:,V:,problem-class:,problem-seed:,kill-thresholds:,enable-kill:,num-to-kill:,\
-enable-revive:,revive-threshold: -- "$@") || {
-  echo "Invalid options"; exit 1;
-}
+enable-revive:,revive-threshold: -- "$@") || { echo "Invalid options"; exit 1; }
 eval set -- "$PARSED"
 
 while true; do
@@ -65,8 +86,8 @@ while true; do
     --num-to-kill)                NUM_TO_KILL="$2"; shift 2 ;;
     --enable-revive)              ENABLE_REVIVE="$2"; shift 2 ;;
     --revive-threshold)           REVIVE_THRESHOLDS_STR="$2"; shift 2 ;;
-    --  ) shift; break ;;
-    * ) echo "Unexpected option: $1"; exit 1 ;;
+    --) shift; break ;;
+    *) echo "Unexpected option: $1"; exit 1 ;;
   esac
 done
 
@@ -96,16 +117,33 @@ fi
 
 # ===== Helpers =====
 
+log_node_diagnostics() {
+  local out_dir="$1"
+  {
+    echo "=== NODE DIAGNOSTICS ==="
+    echo "Hostname: $(hostname)"
+    echo "Date: $(date)"
+    echo "Ulimit: $(ulimit -a)"
+    echo "--- Memory ---"
+    free -h || true
+    echo "--- Network Interfaces ---"
+    ip addr || ifconfig || echo "ip/ifconfig missing"
+    echo "--- Env Vars (ROS specific) ---"
+    env | grep -E "ROS|RMW|PYTHON" || true
+    echo "--- Load Average ---"
+    uptime || true
+  } > "$out_dir/node_diagnostics.txt"
+}
+
 check_coverage_complete() {
   local run_dir="$1"
   local missing_coverage=false
-  # Grep for success in agent logs
   for agent_log in "$run_dir"/agent_*.log; do
-    if ! grep -q "Coverage Complete" "$agent_log"; then
-      # Also check simulator log if agents failed to log it
-      if ! grep -q "Coverage Complete" "$run_dir/simulator.log"; then
-         echo "Coverage not complete in $agent_log"
-         missing_coverage=true
+    if ! grep -q "Coverage Complete" "$agent_log" 2>/dev/null; then
+      # fallback check simulator.log
+      if ! grep -q "Coverage Complete" "$run_dir/simulator.log" 2>/dev/null; then
+        echo "Coverage not complete in $agent_log"
+        missing_coverage=true
       fi
     fi
   done
@@ -166,8 +204,8 @@ decode_status () {
 check_first_dead () {
   FIRST_DEAD_PID=""
   local pid stat
-  for pid in "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; do
-    [ -z "$pid" ] && continue
+  for pid in "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"; do
+    [ -z "${pid:-}" ] && continue
     if ! ps -p "$pid" >/dev/null 2>&1; then
       FIRST_DEAD_PID="$pid"
       return 1
@@ -183,12 +221,6 @@ check_first_dead () {
     fi
   done
   return 0
-}
-
-slug () {
-  local s="$1"
-  s="${s//[^A-Za-z0-9._-]/_}"
-  echo "$s"
 }
 
 write_run_settings () {
@@ -211,6 +243,7 @@ write_run_settings () {
     echo "problem_class=${_problem_class}"
     echo "kill_threshold=${_kill_th}"
     echo "revive_threshold=${_revive_th}"
+    echo "run_uid=${_uid}"
   } > "$_cfg/run_settings.txt"
 }
 
@@ -236,13 +269,11 @@ write_param_tag_file () {
   } > "$_dir/setting_tag.txt"
 }
 
-declare -A PID_ROLE
-declare -A PID_LOG
-LOGGER_PID=""
-SIM_PID=""
-AGENT_PIDS=()
-
 start_all_processes () {
+  # Match CBM isolation to avoid DDS cross-talk / nondeterministic startup
+  export ROS_LOCALHOST_ONLY=1
+  export ROS_DOMAIN_ID=$(( (RANDOM % 100) + 1 ))
+
   local CUR_PROBLEM_CLASS="$1"; shift
   local CUR_PROBLEM_SEED="$1"; shift
   local CUR_ENABLE_KILL="$1"; shift
@@ -251,8 +282,13 @@ start_all_processes () {
   local CUR_ENABLE_REVIVE="$1"; shift
   local CUR_REVIVE_TH="$1"; shift
 
-  LOGGER_LOG="$CONFIG_DIR/logger.log"
-  # Logger stays the same
+  # reset globals for this run
+  LOGGER_PID=""
+  SIM_PID=""
+  AGENT_PIDS=()
+  FIRST_DEAD_PID=""
+
+  local LOGGER_LOG="$CONFIG_DIR/logger.log"
   LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
       --ros-args \
@@ -261,7 +297,7 @@ start_all_processes () {
       -p problem_size:="$PROBLEM_SIZE")
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
-  SIM_LOG="$CONFIG_DIR/simulator.log"
+  local SIM_LOG="$CONFIG_DIR/simulator.log"
   local -a SIM_CMD=(
     ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE"
     --num_robots "$NUM_AGENTS"
@@ -278,10 +314,8 @@ start_all_processes () {
   SIM_PID=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
   PID_ROLE["$SIM_PID"]="simulator"; PID_LOG["$SIM_PID"]="$SIM_LOG"
 
-  AGENT_PIDS=()
   for ((i=0; i<NUM_AGENTS; i++)); do
     local AGENT_LOG="$CONFIG_DIR/agent_${i}.log"
-    # UPDATED: Simplified arguments for Greedy Agent
     local -a CMD=(
       ros2 run "$PACKAGE_NAME" "$AGENT_EXECUTABLE"
       --ros-args
@@ -291,26 +325,92 @@ start_all_processes () {
       -p problem_class:="$CUR_PROBLEM_CLASS"
       -p problem_seed:="$CUR_PROBLEM_SEED"
     )
-
     local pid
     pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
   done
+
+  # Startup barrier (parallel init check)
+  echo "   [STARTUP] Waiting for $NUM_AGENTS agents to initialize (Parallel check)..."
+  local start_wait
+  start_wait=$(date +%s)
+
+  local -a is_ready
+  for ((i=0; i<NUM_AGENTS; i++)); do is_ready[$i]=0; done
+  local pending_count=$NUM_AGENTS
+
+  while [ "$pending_count" -gt 0 ]; do
+    local now
+    now=$(date +%s)
+
+    if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
+      echo "[ERROR] Startup Timeout! The following agents failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
+      echo "--- DIAGNOSTICS FOR FAILED AGENTS ---"
+      dmesg | tail -n 50 | grep -i "killed process\|out of memory\|oom" || echo "No recent OOM/kernel kill messages found in dmesg"
+
+      for ((i=0; i<NUM_AGENTS; i++)); do
+        if [ "${is_ready[$i]}" -eq 0 ]; then
+          local pid="${AGENT_PIDS[$i]}"
+          local logf="${PID_LOG[$pid]:-}"
+          echo ">>> AGENT $i (PID $pid) LOG DUMP START <<<"
+          if [ -n "$logf" ] && [ -f "$logf" ]; then
+            echo "--- HEAD (First 30 lines) ---"
+            head -n 30 "$logf" || true
+            echo "--- TAIL (Last 120 lines) ---"
+            tail -n 120 "$logf" || true
+          else
+            echo "Log file not found/recorded for agent $i (pid=$pid)"
+          fi
+          echo ">>> AGENT $i LOG DUMP END <<<"
+        fi
+      done
+      return 1
+    fi
+
+    for ((i=0; i<NUM_AGENTS; i++)); do
+      if [ "${is_ready[$i]}" -eq 0 ]; then
+        local pid="${AGENT_PIDS[$i]}"
+        local logf="${PID_LOG[$pid]:-}"
+
+        # crashed?
+        if ! kill -0 "$pid" 2>/dev/null; then
+          echo "[ERROR] Agent $i (PID $pid) crashed immediately! (process gone)"
+          if [ -n "$logf" ] && [ -f "$logf" ]; then
+            echo "--------- last 200 lines of $logf ---------"
+            tail -n 200 "$logf" || true
+            echo "-------------------------------------------"
+          fi
+          return 1
+        fi
+
+        # ready marker?
+        if [ -n "$logf" ] && [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
+          is_ready[$i]=1
+          pending_count=$((pending_count - 1))
+        fi
+      fi
+    done
+
+    sleep 1
+  done
+
+  echo "   [STARTUP] All $NUM_AGENTS agents initialized successfully."
+  return 0
 }
 
 on_sigint () {
   echo "[SIGINT] Cleaning up processes..."
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"
   exit 130
 }
 on_sigterm () {
   echo "[SIGTERM] Cleaning up processes..."
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"
   exit 143
 }
 on_exit () {
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"
 }
 trap on_sigint INT
 trap on_sigterm TERM
@@ -338,7 +438,6 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
 
     mkdir -p "$COMBO_ROOT"
 
-    # UPDATED: Simplified Folder Name (No RL Params)
     PARAM_DIR="$COMBO_ROOT/method_GREEDY"
     mkdir -p "$PARAM_DIR"
 
@@ -369,47 +468,76 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
 
     run=$START_RUN
     while [ "$run" -le "$NUM_RUNS" ]; do
-
       RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
       echo "============================="
-      echo "[INFO] Run $run/$NUM_RUNS :: method=GREEDY :: kill=$ENABLE_KILL :: revive=$ENABLE_REVIVE :: agents=$NUM_AGENTS :: size=$PROBLEM_SIZE"
+      echo "[INFO] Run $run/$NUM_RUNS :: method=GREEDY :: kill=$ENABLE_KILL :: kill_th=$KILL_TH :: revive=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: agents=$NUM_AGENTS :: size=$PROBLEM_SIZE :: class=$PROBLEM_CLASS :: seed=$RUN_SEED"
       echo "============================="
 
       CONFIG_DIR="$PARAM_DIR/run_${run}"
       ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
       mkdir -p "$ROS2_LOG_DIR"
 
+      log_node_diagnostics "$CONFIG_DIR"
       write_run_settings "$CONFIG_DIR" "$(unique_id)" "$PROBLEM_CLASS" "$KILL_TH" "$REVIVE_TH"
 
-      start_all_processes \
+      # If startup fails, cleanup + retry (like CBM runner)
+      if ! start_all_processes \
           "$PROBLEM_CLASS" "$RUN_SEED" \
           "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
-          "$ENABLE_REVIVE" "$REVIVE_TH"
+          "$ENABLE_REVIVE" "$REVIVE_TH"; then
+
+        echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
+        cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"
+        rm -rf "$CONFIG_DIR"
+
+        # stuck detection
+        if [[ "$LAST_RUN_NUM" == "$run" ]]; then
+          SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
+        else
+          LAST_RUN_NUM="$run"
+          SAME_RUN_COUNT=1
+        fi
+        if [ "$SAME_RUN_COUNT" -ge 5 ]; then
+          echo "[FATAL] Run $run has failed start-up 5 times. Exiting."
+          exit 1
+        fi
+        continue
+      fi
 
       START_TIME=$(date +%s)
       RUN_TIMEOUT=0
       FIRST_DEAD_PID=""
+
       while true; do
         sleep 2
         CURRENT_TIME=$(date +%s)
         ELAPSED=$((CURRENT_TIME - START_TIME))
 
         if ! check_first_dead; then
-          role="${PID_ROLE[$FIRST_DEAD_PID]}"
-          logf="${PID_LOG[$FIRST_DEAD_PID]}"
-          if wait "$FIRST_DEAD_PID"; then
+          # SAFE associative lookups under `set -u`
+          role="${PID_ROLE[${FIRST_DEAD_PID:-}]:-unknown}"
+          logf="${PID_LOG[${FIRST_DEAD_PID:-}]:-}"
+
+          # wait safely
+          if [ -n "${FIRST_DEAD_PID:-}" ] && wait "$FIRST_DEAD_PID"; then
             STATUS=0
           else
-            STATUS=$?
+            STATUS=$? || STATUS=1
           fi
+
           echo "[ELAPSED]: ${ELAPSED}s"
           if [ "$ELAPSED" -le 30 ]; then
-            echo "[EARLY FAILURE DETECTED] $role (pid=$FIRST_DEAD_PID) exited with code $STATUS after ${ELAPSED}s"
+            echo "[EARLY FAILURE DETECTED] $role (pid=${FIRST_DEAD_PID:-none}) exited with code $STATUS after ${ELAPSED}s"
           fi
-          echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
-          echo "--------- last 120 lines of $logf ---------"
-          tail -n 120 "$logf" || true
-          echo "-------------------------------------------"
+          echo "[DETECT] $role (pid=${FIRST_DEAD_PID:-none}) $(decode_status "$STATUS") after ${ELAPSED}s"
+
+          if [ -n "$logf" ] && [ -f "$logf" ]; then
+            echo "--------- last 120 lines of $logf ---------"
+            tail -n 120 "$logf" || true
+            echo "-------------------------------------------"
+          else
+            echo "[WARN] No log file recorded for pid=${FIRST_DEAD_PID:-none} role=$role"
+          fi
           break
         fi
 
@@ -420,14 +548,14 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
         fi
       done
 
-      cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+      cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]}"
 
       if ! check_coverage_complete "$CONFIG_DIR"; then
         echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
         rm -rf "$CONFIG_DIR"
         echo "[RETRY] Repeating run $run"
 
-        # >>> stuck detection <<<
+        # stuck detection
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
         else
@@ -438,8 +566,6 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
           echo "[FATAL] Run $run has failed $SAME_RUN_COUNT times. Exiting to avoid infinite loop."
           exit 1
         fi
-        # >>> end stuck detection <<<
-
         continue
       fi
 
