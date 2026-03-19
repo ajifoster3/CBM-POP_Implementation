@@ -1,10 +1,10 @@
 
 class WeightMatrix:
-    def __init__(self, num_intensifiers, num_diversifiers, ours=False):
+    def __init__(self, num_intensifiers, num_diversifiers, free_weight_matrix):
         self.num_diversifiers = num_diversifiers
         self.num_intensifiers = num_intensifiers
-        if ours:
-            self.weights = self.init_our_weight_matrix()
+        if free_weight_matrix:
+            self.weights = self.init_free_weight_matrix()
         else:
             self.weights = self.init_weight_matrix()
 
@@ -12,13 +12,6 @@ class WeightMatrix:
     def init_weight_matrix(self):
         """
         Generates a weight matrix mapping conditions onto operations.
-            o1o2o3o4o5o6o7
-        c0: 0 0 1 1 1 1 1 <- Initial diversification operator
-        c1: 1 1 0 0 0 0 0 <- Subsequent intensification operator
-        c2: 0 1 0 0 0 0 0 <- Which operator after intensification operator 1
-        c3: 1 0 0 0 0 0 0 <- Which operator after intensification operator 2 (Move rows if there's more intensifiers)
-        c4: 0 0 1 1 1 1 1 <- If all intensification operators haven't improved the solution, which diversificator to use
-        :return: A weight matrix mapping conditions to operations
         """
         print("Initialising Classical Weight Matrix")
 
@@ -35,24 +28,6 @@ class WeightMatrix:
         print(f"Classical weights: {weight_matrix}")
         return weight_matrix
 
-    def init_our_weight_matrix(self):
-        """
-        Generates a weight matrix mapping conditions onto operations.
-            o1o2o3o4o5o6o7
-        :return: A weight matrix mapping conditions to operations
-        """
-        print("Initialising Novel Weight Matrix")
-        # Initialize and return a weight matrix (for operator selection, if needed)
-        weight_matrix = []
-        initial_diversifier_condition_row = [0] * self.num_intensifiers + [1] * self.num_diversifiers
-        weight_matrix.append(initial_diversifier_condition_row)
-        initial_intensifier_condition_row = [1] * self.num_intensifiers + [1] * self.num_diversifiers
-        weight_matrix.append(initial_intensifier_condition_row)
-        for i in range(self.num_intensifiers):
-            intensifier_condition_row = [1] * self.num_intensifiers + [0] * self.num_diversifiers
-            weight_matrix.append(intensifier_condition_row)
-        return weight_matrix
-
     def apply_classical_mask(self):
         """
         Applies the classical initial weight mask to the current weights.
@@ -66,6 +41,25 @@ class WeightMatrix:
                     self.weights[i][j] = 0.0
 
         print(f"{self.weights}")
+
+    def init_free_weight_matrix(self):
+        """
+        Generates a weight matrix mapping conditions onto operations.
+        """
+        print("Initialising Classical Weight Matrix")
+
+        # Initialize and return a weight matrix (for operator selection, if needed)
+        weight_matrix = []
+        initial_diversifier_condition_row = [1.0] * self.num_intensifiers + [1.0] * self.num_diversifiers
+        weight_matrix.append(initial_diversifier_condition_row)
+        initial_intensifier_condition_row = [1.0] * self.num_intensifiers + [1.0] * self.num_diversifiers
+        weight_matrix.append(initial_intensifier_condition_row)
+        for i in range(self.num_intensifiers):
+            intensifier_condition_row = [1.0] * self.num_intensifiers + [1.0] * self.num_diversifiers
+            intensifier_condition_row[i] = 1.0
+            weight_matrix.append(intensifier_condition_row)
+        print(f"Classical weights: {weight_matrix}")
+        return weight_matrix
 
     def pack_weights(self, id):
         """
