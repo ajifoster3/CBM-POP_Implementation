@@ -18,6 +18,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 
 from std_msgs.msg import String, Float32, Bool
+
+from cbm_pop.ucb_bandit import UCBBandit
 from cbm_pop_interfaces.msg import (
     Solution,
     Weights,
@@ -25,7 +27,6 @@ from cbm_pop_interfaces.msg import (
     SimplePosition,
     FinishedCoverage,
     CurrentTask,
-    NNParameters,
 )
 
 from enum import Enum
@@ -40,8 +41,8 @@ from cbm_pop.SimpleSimulator.simple_problem import SimpleProblem, ProblemClass
 class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
     Q_LEARNING = "Q-Learning"
-    DEEP_Q = "Deep-Q"
-    DOUBLE_DEEP_Q = "Double-Deep-Q"
+    UNIFORM = "Uniform"
+    UCB = "UCB"
 
 
 class CBMPopulationAgentOnlineSimpleSimulation(Node):
@@ -65,16 +66,18 @@ class CBMPopulationAgentOnlineSimpleSimulation(Node):
         problem_size=15,
         lock_mode: bool = False,
         preserve_next_task=False,
-        use_ucb: bool = False,
-        ucb_c: float = 1.0,
         inject_best_on_cycle: bool = False,
         inject_best_prob: float = 0.90,
         initialise_with_heuristic=True,
-        replay_buffer_size=50,
-        tau=0.01,
-        batch_size=10,
         problem_class=ProblemClass.SimpleGrid,
         problem_seed=1,
+        is_free_weight_matrix=False,
+        is_inject_best_on_cycle=False,
+        is_append_first_task=True,
+        is_knn_enabled=False,
+        is_mimetism_enabled=True,
+        ucb_c: float = 1.414,
+        ucb_window: int = 200,
     ):
         super().__init__(node_name)
 
@@ -102,16 +105,16 @@ RL Parameters:
   - Positive Reward: {positive_reward}
   - Negative Reward: {negative_reward}
 
-UCB:
-  - Enabled:         {use_ucb}
-  - Exploration c:   {ucb_c}
-
 Post-cycle injection:
   - Enabled:         {inject_best_on_cycle}
   - Probability:     {inject_best_prob}
 
 Number of TSP Agents: {num_tsp_agents}
 Problem Size:         {problem_size}
+
+UCB Parameters:
+  - C:               {ucb_c}
+  - Window:          {ucb_window}
 =======================================================
 """
         print(settings_str)
@@ -169,20 +172,31 @@ Problem Size:         {problem_size}
         self.local_best_solution = None
         self.coalition_best_agent = None
 
-        # Operators and weights
-        self.intensifiers = [
-            Operator.ONE_MOVE,
-            Operator.TWO_SWAP,
-            Operator.TWO_OPT_INTRA,
-            Operator.NEAREST_K_RELOCATION,
-        ]
+        self.intensifiers = None
+        if is_knn_enabled:
+            # Operators and weights
+            self.intensifiers = [
+                Operator.ONE_MOVE,
+                Operator.TWO_SWAP,
+                Operator.TWO_OPT_INTRA,
+                Operator.NEAREST_K_RELOCATION,
+            ]
+        else:
+            self.intensifiers = [
+                Operator.ONE_MOVE,
+                Operator.TWO_SWAP,
+                Operator.TWO_OPT_INTRA,
+            ]
         self.diversifiers = [
             Operator.BEST_COST_ROUTE_CROSSOVER,
             Operator.INTRA_DEPOT_REMOVAL,
             Operator.INTRA_DEPOT_SWAPPING,
             Operator.SINGLE_ACTION_REROUTING,
         ]
-        self.weight_matrix = WeightMatrix(len(self.intensifiers), len(self.diversifiers))
+
+        self.weight_matrix = WeightMatrix(len(self.intensifiers), len(self.diversifiers), is_free_weight_matrix)
+
+
 
         self.population = None
         self.previous_experience = []
@@ -190,7 +204,6 @@ Problem Size:         {problem_size}
         self.agent_ID = agent_id
 
         self.received_weight_matrices = []
-        self.received_NNParameter_matrices = []
 
         if isinstance(learning_method, str):
             try:
@@ -201,6 +214,14 @@ Problem Size:         {problem_size}
                     f"{[e.value for e in LearningMethod]}"
                 )
         self.learning_method = learning_method
+
+        self.ucb_bandit=None
+        if learning_method== LearningMethod.UCB:
+            self.ucb_bandit = UCBBandit(
+                n_operators=len(self.intensifiers) + len(self.diversifiers),
+                c=ucb_c,
+                window=ucb_window,
+            )
 
         self.inject_best_on_cycle = inject_best_on_cycle
         self.inject_best_prob = inject_best_prob
@@ -322,17 +343,15 @@ Problem Size:         {problem_size}
         self.gamma_decay = gamma_decay
         self.positive_reward = positive_reward
         self.negative_reward = negative_reward
+        self.is_mimetism_emabled = is_mimetism_enabled
+        self.is_inject_best_on_cycle = is_inject_best_on_cycle
+        self.is_append_first_task = is_append_first_task
 
         self.run_timer = None
         self.is_loop_started = False
 
         self.task_covered = -1
         self.is_new_task_covered = False
-
-        # UCB settings/state
-        self.use_ucb = use_ucb
-        self.ucb_c = ucb_c
-        self.operator_usage_counts = {}
 
         self.create_timer(5, self.check_stale_agents)
 
@@ -538,7 +557,7 @@ Problem Size:         {problem_size}
         print(f"{population[0]}")
         return population
 
-    def _set_coalition_best_solution(self, solution):
+    def __update_coalition_best(self, solution):
         self.coalition_best_solution = deepcopy(solution)
         if not self.lock_mode or self.current_task is None:
             self.__assign_next_task(solution)
@@ -792,6 +811,50 @@ Problem Size:         {problem_size}
             self.get_logger().info("Coverage Complete — shutting down in 5 seconds...")
             self.create_timer(5.0, lambda: rclpy.shutdown())
 
+    def _prepend_current_task(self, solution):
+        """
+        Returns a copy of solution with self.current_task moved to the front
+        of this agent's segment (stealing it from whichever agent currently holds it).
+        Returns None if the operation isn't applicable.
+        """
+        if self.current_task is None or solution is None:
+            return None
+
+        order = list(solution[0])
+        alloc = list(solution[1])
+        task = self.current_task
+
+        if task not in order:
+            return None
+
+        task_pos = order.index(task)
+
+        # Identify the owning agent before we mutate anything
+        cursor, owner = 0, None
+        for i, a in enumerate(alloc):
+            if cursor <= task_pos < cursor + a:
+                owner = i
+                break
+            cursor += a
+
+        if owner is None:
+            return None
+
+        # Remove task from its current position
+        order.pop(task_pos)
+
+        # Adjust allocations only if the task is moving between agents
+        if owner != self.agent_ID:
+            alloc[owner] -= 1
+            alloc[self.agent_ID] += 1
+        # If owner == self.agent_ID it's already in our segment — just reorder
+
+        # Insert at the front of this agent's segment
+        start = sum(alloc[: self.agent_ID])
+        order.insert(start, task)
+
+        return (order, alloc)
+
     def __solution_update_callback(self, msg):
         if self.am_i_failed:
             return
@@ -812,16 +875,26 @@ Problem Size:         {problem_size}
                 return
 
         active_agents = self._active_agent_indices()
-        expected_alloc_len = len(active_agents)
-        if len(recv_alloc) != expected_alloc_len:
+        if len(recv_alloc) != len(active_agents):
             self.get_logger().info(
                 f"[solution_update_callback] ignoring solution: alloc len={len(recv_alloc)} "
-                f"!= active agents={expected_alloc_len}"
+                f"!= active agents={len(active_agents)}"
             )
             return
 
         received = (recv_order, recv_alloc)
         cand = __sanitize_strip_covered(received)
+
+        # --- append-first-task: try promoting current_task to head of our segment ---
+        modified_was_adopted = False
+        if self.is_append_first_task and cand and cand[0]:
+            modified = self._prepend_current_task(cand)
+            if modified is not None:
+                modified_f = self._fitness(modified)
+                cand_f = self._fitness(cand)
+                if modified_f < cand_f:
+                    cand = modified
+                    modified_was_adopted = True
 
         cur = self.coalition_best_solution
         if cur:
@@ -834,7 +907,11 @@ Problem Size:         {problem_size}
             return
 
         if cand_f < cur_f:
-            self._set_coalition_best_solution(cand)
+            if modified_was_adopted:
+                self.__update_publish_coalition_best(cand)  # sets + publishes
+            else:
+                self.__update_coalition_best(cand)
+
 
     def __global_pose_callback(self, msg):
         agent = None
@@ -1211,8 +1288,8 @@ Problem Size:         {problem_size}
                 return True
         return False
 
-    def __update_coalition_best(self, c_new):
-        self._set_coalition_best_solution(c_new)
+    def __update_publish_coalition_best(self, c_new):
+        self.__update_coalition_best(c_new)
         self.coalition_best_agent = self.agent_ID
         self.best_coalition_improved = True
         solution = Solution()
@@ -1226,47 +1303,50 @@ Problem Size:         {problem_size}
         self.best_local_improved = True
 
     def __finish_di_cycle(self):
-        learning_method_switch = {
-            LearningMethod.FERREIRA: self.__individual_learning_old,
-            LearningMethod.Q_LEARNING: self.__individual_learning,
-        }
-        learning_function = learning_method_switch.get(self.learning_method)
-        if learning_function:
-            self.weight_matrix.weights = learning_function()
-        else:
-            self.get_logger().error(f"[CHK] Unknown learning method: {self.learning_method}")
+        if self.learning_method not in (LearningMethod.UNIFORM, LearningMethod.UCB):
+            learning_method_switch = {
+                LearningMethod.FERREIRA: self.__individual_learning_old,
+                LearningMethod.Q_LEARNING: self.__individual_learning,
+            }
+            learning_function = learning_method_switch.get(self.learning_method)
+            if learning_function:
+                self.weight_matrix.weights = learning_function()
+            else:
+                self.get_logger().error(f"[CHK] Unknown learning method: {self.learning_method}")
 
-        self.best_local_improved = False
+            self.best_local_improved = False
 
-        if self.best_coalition_improved:
-            self.best_coalition_improved = False
-            msg = Weights()
-            msg_dict = self.weight_matrix.pack_weights(self.agent_ID)
-            msg.id = msg_dict["id"]
-            msg.rows = msg_dict["rows"]
-            msg.cols = msg_dict["cols"]
-            msg.weights = msg_dict["weights"]
-            self.weight_publisher.publish(msg)
+            if self.is_mimetism_emabled:
+                if self.best_coalition_improved:
+                    self.best_coalition_improved = False
+                    msg = Weights()
+                    msg_dict = self.weight_matrix.pack_weights(self.agent_ID)
+                    msg.id = msg_dict["id"]
+                    msg.rows = msg_dict["rows"]
+                    msg.cols = msg_dict["cols"]
+                    msg.weights = msg_dict["weights"]
+                    self.weight_publisher.publish(msg)
 
-        if self.received_weight_matrices:
-            self.__mimetism_learning(self.received_weight_matrices, self.rho)
-            self.received_weight_matrices = []
-
+                if self.received_weight_matrices:
+                    self.__mimetism_learning(self.received_weight_matrices, self.rho)
+                    self.received_weight_matrices = []
+        print(self.weight_matrix.weights)
         # injection block
-        try:
-            if (
-                self.inject_best_on_cycle
-                and self.coalition_best_solution
-                and self.population
-                and random.random() < self.inject_best_prob
-            ):
-                worst_idx, _ = max(enumerate(self.population), key=lambda it: self._fitness(it[1]))
-                self.population[worst_idx] = deepcopy(self.coalition_best_solution)
-                self.current_solution = deepcopy(self.coalition_best_solution)
-                self.current_parent_idx = worst_idx
-                self.no_improvement_attempt_count = 0
-        except Exception as e:
-            self.get_logger().warning(f"[INJECT] failed: {e}")
+        if self.is_inject_best_on_cycle:
+            try:
+                if (
+                    self.inject_best_on_cycle
+                    and self.coalition_best_solution
+                    and self.population
+                    and random.random() < self.inject_best_prob
+                ):
+                    worst_idx, _ = max(enumerate(self.population), key=lambda it: self._fitness(it[1]))
+                    self.population[worst_idx] = deepcopy(self.coalition_best_solution)
+                    self.current_solution = deepcopy(self.coalition_best_solution)
+                    self.current_parent_idx = worst_idx
+                    self.no_improvement_attempt_count = 0
+            except Exception as e:
+                self.get_logger().warning(f"[INJECT] failed: {e}")
 
         self.previous_experience = []
         self.di_cycle_count = 0
@@ -1492,7 +1572,11 @@ Problem Size:         {problem_size}
                 self.no_improvement_attempt_count = 0
 
             enabled_ops = self.intensifiers + self.diversifiers
-            operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition, enabled_ops)
+            if self.learning_method == LearningMethod.UCB:
+                op_idx = self.ucb_bandit.select()
+                operator = enabled_ops[op_idx]
+            else:
+                operator = OperatorFunctions.choose_operator(self.weight_matrix.weights, condition, enabled_ops)
 
             c_new = self.__apply_operator(operator)
             if c_new is None:
@@ -1506,6 +1590,8 @@ Problem Size:         {problem_size}
 
             gain = new_f - cur_f
             self.__update_experience(condition, operator, gain)
+            if self.learning_method == LearningMethod.UCB:
+                self.ucb_bandit.update(op_idx, -gain)
 
             if self.local_best_solution is None or new_f < loc_f:
                 self.__update_local_best(c_new)
@@ -1514,7 +1600,7 @@ Problem Size:         {problem_size}
                 self.no_improvement_attempt_count += 1
 
             if self.coalition_best_solution is None or new_f < coal_f:
-                self.__update_coalition_best(c_new)
+                self.__update_publish_coalition_best(c_new)
 
             self.current_solution = c_new
             self._reinsert_child(c_new, replace_policy="better", fallback="worst")
@@ -1593,16 +1679,18 @@ def main(args=None):
         "preserve_next_task": False,
         "eta": 0.1,
         "rho": 0.1,
-        "use_ucb": False,
-        "ucb_c": 1.0,
         "inject_best_on_cycle": True,
         "inject_best_prob": 0.90,
         "initialise_with_heuristic": True,
-        "replay_buffer_size": 50,
-        "tau": 0.01,
-        "batch_size": 10,
         "problem_class": "Simple_Grid",
         "problem_seed": 1,
+        "is_free_weight_matrix": False,
+        "is_inject_best_on_cycle": False,
+        "is_append_first_task": True,
+        "is_knn_enabled": False,
+        "is_mimetism_enabled": True,
+        "ucb_c": 1.414,
+        "ucb_window": 200,
     }
     for k, v in params.items():
         temp_node.declare_parameter(k, v)
@@ -1620,16 +1708,18 @@ def main(args=None):
     preserve_next_task = temp_node.get_parameter("preserve_next_task").value
     eta = temp_node.get_parameter("eta").value
     rho = temp_node.get_parameter("rho").value
-    use_ucb = temp_node.get_parameter("use_ucb").value
-    ucb_c = temp_node.get_parameter("ucb_c").value
     inject_best_on_cycle = temp_node.get_parameter("inject_best_on_cycle").value
     inject_best_prob = temp_node.get_parameter("inject_best_prob").value
     initialise_with_heuristic = temp_node.get_parameter("initialise_with_heuristic").value
-    replay_buffer_size = temp_node.get_parameter("replay_buffer_size").value
-    tau = temp_node.get_parameter("tau").value
-    batch_size = temp_node.get_parameter("batch_size").value
     problem_class = temp_node.get_parameter("problem_class").value
     problem_seed = temp_node.get_parameter("problem_seed").value
+    is_free_weight_matrix = temp_node.get_parameter("is_free_weight_matrix").value
+    is_inject_best_on_cycle = temp_node.get_parameter("is_inject_best_on_cycle").value
+    is_append_first_task = temp_node.get_parameter("is_append_first_task").value
+    is_knn_enabled = temp_node.get_parameter("is_knn_enabled").value
+    is_mimetism_enabled = temp_node.get_parameter("is_mimetism_enabled").value
+    ucb_c = temp_node.get_parameter("ucb_c").value
+    ucb_window = temp_node.get_parameter("ucb_window").value
 
     temp_node.destroy_node()
 
@@ -1652,17 +1742,19 @@ def main(args=None):
         negative_reward=negative_reward,
         lock_mode=lock_mode,
         preserve_next_task=preserve_next_task,
-        use_ucb=use_ucb,
-        ucb_c=ucb_c,
         problem_size=problem_size,
         inject_best_on_cycle=inject_best_on_cycle,
         inject_best_prob=inject_best_prob,
         initialise_with_heuristic=initialise_with_heuristic,
-        replay_buffer_size=replay_buffer_size,
-        tau=tau,
-        batch_size=batch_size,
         problem_class=problem_class,
         problem_seed=problem_seed,
+        is_free_weight_matrix=is_free_weight_matrix,
+        is_inject_best_on_cycle=is_inject_best_on_cycle,
+        is_append_first_task=is_append_first_task,
+        is_knn_enabled=is_knn_enabled,
+        is_mimetism_enabled=is_mimetism_enabled,
+        ucb_c=ucb_c,
+        ucb_window=ucb_window,
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
 

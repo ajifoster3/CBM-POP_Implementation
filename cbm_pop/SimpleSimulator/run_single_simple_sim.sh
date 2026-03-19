@@ -12,7 +12,6 @@ set -u
 # ===== Better diagnostics =====
 export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
 export RCUTILS_LOGGING_USE_STDOUT=1
-# [DIAGNOSTIC CHANGE] Changed to 0 to force immediate flush to disk on slow filesystems
 export RCUTILS_LOGGING_BUFFERED_STREAM=0
 export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
@@ -21,12 +20,10 @@ ulimit -c unlimited || true
 
 gen_seed() {
   if command -v od >/dev/null 2>&1; then
-    # 0–65535 -> 10000–99999
     printf '%d\n' $(( 10000 + ( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 90000 ) ))
   elif command -v shuf >/dev/null 2>&1; then
     shuf -i 10000-99999 -n1
   else
-    # widen range using two RANDOMs
     printf '%d\n' $(( 10000 + ( ( (RANDOM << 15) | RANDOM ) % 90000 ) ))
   fi
 }
@@ -39,13 +36,11 @@ LOGGER_EXECUTABLE="simple_fitness_logger"
 AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 
-# *** IMPORTANT: Change this to match a log line your agent prints when it starts ***
-# If unsure, use "[" to match the start of any log timestamp.
 AGENT_INIT_MSG="["
-AGENT_STARTUP_TIMEOUT=30 # Seconds to wait for all agents to init
+AGENT_STARTUP_TIMEOUT=30
 
 RUNTIME=-1.0
-TIMEOUT_SECONDS=300 # 5 minutes
+TIMEOUT_SECONDS=300
 
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
@@ -56,7 +51,9 @@ PARSED=$(getopt -o p:a:m:l:t:r:L:P:N:G:R:E:U:C:B:Q:T:S:H:V: \
 L:,lr:,P:,positive-reward:,N:,negative-reward:,G:,gamma-decay:,R:,rho:,E:,eta:,\
 U:,use-ucb:,C:,ucb-c:,B:,replay-buffer-size:,Q:,tau:,T:,batch-size:,S:,inject-best-prob:,\
 H:,init-with-heuristic:,V:,problem-class:,problem-seed:,kill-thresholds:,enable-kill:,num-to-kill:,\
-enable-revive:,revive-threshold: -- "$@") || {
+enable-revive:,revive-threshold:,\
+ucb-window:,is-free-weight-matrix:,is-inject-best-on-cycle:,\
+is-append-first-task:,is-knn-enabled:,is-mimetism-enabled: -- "$@") || {
   echo "Invalid options"; exit 1;
 }
 eval set -- "$PARSED"
@@ -77,18 +74,24 @@ while true; do
     -E|--E|--eta)                 ETA="$2"; shift 2 ;;
     -U|--U|--use-ucb)             USE_UCB="$2"; shift 2 ;;
     -C|--C|--ucb-c)               UCB_C="$2"; shift 2 ;;
-    -B|--B|--replay-buffer-size) REPLAY_BUFFER_SIZE="$2"; shift 2 ;;
+    -B|--B|--replay-buffer-size)  REPLAY_BUFFER_SIZE="$2"; shift 2 ;;
     -Q|--Q|--tau)                 TAU="$2"; shift 2 ;;
     -T|--T|--batch-size)          BATCH_SIZE="$2"; shift 2 ;;
     -S|--S|--inject-best-prob)    INJECT_BEST_PROB="$2"; shift 2 ;;
     -H|--H|--init-with-heuristic) INIT_WITH_HEURISTIC="$2"; shift 2 ;;
-    --problem-class)             PROBLEM_CLASS="$2"; shift 2 ;;
-    --problem-seed)              PROBLEM_SEED="$2"; shift 2 ;;
+    --problem-class)              PROBLEM_CLASS="$2"; shift 2 ;;
+    --problem-seed)               PROBLEM_SEED="$2"; shift 2 ;;
     --kill-thresholds)            KILL_THRESHOLDS_STR="$2"; shift 2 ;;
     --enable-kill)                ENABLE_KILL="$2"; shift 2 ;;
     --num-to-kill)                NUM_TO_KILL="$2"; shift 2 ;;
     --enable-revive)              ENABLE_REVIVE="$2"; shift 2 ;;
     --revive-threshold)           REVIVE_THRESHOLDS_STR="$2"; shift 2 ;;
+    --ucb-window)                 UCB_WINDOW="$2"; shift 2 ;;
+    --is-free-weight-matrix)      IS_FREE_WEIGHT_MATRIX="$2"; shift 2 ;;
+    --is-inject-best-on-cycle)    IS_INJECT_BEST_ON_CYCLE="$2"; shift 2 ;;
+    --is-append-first-task)       IS_APPEND_FIRST_TASK="$2"; shift 2 ;;
+    --is-knn-enabled)             IS_KNN_ENABLED="$2"; shift 2 ;;
+    --is-mimetism-enabled)        IS_MIMETISM_ENABLED="$2"; shift 2 ;;
     --) shift; break ;;
     *) echo "Unexpected option: $1"; exit 1 ;;
   esac
@@ -109,6 +112,7 @@ RHO=${RHO:-0.50}
 ETA=${ETA:-0.75}
 USE_UCB=${USE_UCB:-"false"}
 UCB_C=${UCB_C:-0.0}
+UCB_WINDOW=${UCB_WINDOW:-200}
 REPLAY_BUFFER_SIZE=${REPLAY_BUFFER_SIZE:-50}
 TAU=${TAU:-0.01}
 BATCH_SIZE=${BATCH_SIZE:-10}
@@ -121,6 +125,11 @@ ENABLE_KILL=${ENABLE_KILL:-"false"}
 NUM_TO_KILL=${NUM_TO_KILL:-"10"}
 ENABLE_REVIVE=${ENABLE_REVIVE:-"false"}
 REVIVE_THRESHOLDS_STR=${REVIVE_THRESHOLDS_STR:-"1.0"}
+IS_FREE_WEIGHT_MATRIX=${IS_FREE_WEIGHT_MATRIX:-"false"}
+IS_INJECT_BEST_ON_CYCLE=${IS_INJECT_BEST_ON_CYCLE:-"false"}
+IS_APPEND_FIRST_TASK=${IS_APPEND_FIRST_TASK:-"true"}
+IS_KNN_ENABLED=${IS_KNN_ENABLED:-"false"}
+IS_MIMETISM_ENABLED=${IS_MIMETISM_ENABLED:-"true"}
 
 # turn thresholds string into arrays
 if [[ "$ENABLE_KILL" == "true" ]]; then
@@ -137,7 +146,6 @@ fi
 
 # ===== Helpers =====
 
-# [DIAGNOSTIC CHANGE] Added helper to profile the node environment
 log_node_diagnostics() {
     local out_dir="$1"
     {
@@ -255,17 +263,24 @@ write_run_settings () {
   local _uid="$1"; shift
   local _use_ucb="$1"; shift
   local _ucb_c="$1"; shift
+  local _ucb_window="$1"; shift
   local _inject="$1"; shift
   local _inject_prob="$1"; shift
   local _problem_class="$1"; shift
   local _kill_th="$1"; shift
   local _revive_th="$1"; shift
+  local _is_free_wm="$1"; shift
+  local _is_inject_cycle="$1"; shift
+  local _is_append="$1"; shift
+  local _is_knn="$1"; shift
+  local _is_mimetism="$1"; shift
   {
     echo "method=${_method}"
     echo "lock_mode=${_lock}"
     echo "preserve_next_task=${_preserve}"
     echo "use_ucb=${_use_ucb}"
     echo "ucb_c=${_ucb_c}"
+    echo "ucb_window=${_ucb_window}"
     echo "inject_best_on_cycle=${_inject}"
     echo "inject_best_prob=${_inject_prob}"
     echo "num_agents=${NUM_AGENTS}"
@@ -281,7 +296,12 @@ write_run_settings () {
     echo "problem_class=${_problem_class}"
     echo "kill_threshold=${_kill_th}"
     echo "revive_threshold=${_revive_th}"
-    if [[ "$_method" == "Q-Learning" || "$_method" == "Double-Deep-Q" ]]; then
+    echo "is_free_weight_matrix=${_is_free_wm}"
+    echo "is_inject_best_on_cycle=${_is_inject_cycle}"
+    echo "is_append_first_task=${_is_append}"
+    echo "is_knn_enabled=${_is_knn}"
+    echo "is_mimetism_enabled=${_is_mimetism}"
+    if [[ "$_method" == "Q-Learning" || "$_method" == "Double-Deep-Q" || "$_method" == "UCB" ]]; then
       echo "gamma_decay=${GAMMA_DECAY}"
       echo "lr=${LR}"
       echo "positive_reward=${POSITIVE_REWARD}"
@@ -304,6 +324,7 @@ write_param_tag_file () {
   local _preserve="$1"; shift
   local _use_ucb="$1"; shift
   local _ucb_c="$1"; shift
+  local _ucb_window="$1"; shift
   local _inject="$1"; shift
   local _pinj="$1"; shift
   local _gamma="$1"; shift
@@ -323,12 +344,18 @@ write_param_tag_file () {
   local _kill_th="$1"; shift
   local _enable_revive="$1"; shift
   local _revive_th="$1"; shift
+  local _is_free_wm="$1"; shift
+  local _is_inject_cycle="$1"; shift
+  local _is_append="$1"; shift
+  local _is_knn="$1"; shift
+  local _is_mimetism="$1"; shift
   {
     echo "method=${_method}"
     echo "lock=${_lock}"
     echo "preserve_next_task=${_preserve}"
     echo "use_ucb=${_use_ucb}"
     echo "ucb_c=${_ucb_c}"
+    echo "ucb_window=${_ucb_window}"
     echo "inject_best_on_cycle=${_inject}"
     echo "inject_best_prob=${_pinj}"
     echo "num_agents=${_n_agents}"
@@ -349,6 +376,11 @@ write_param_tag_file () {
     echo "kill_threshold=${_kill_th}"
     echo "enable_revive=${_enable_revive}"
     echo "revive_threshold=${_revive_th}"
+    echo "is_free_weight_matrix=${_is_free_wm}"
+    echo "is_inject_best_on_cycle=${_is_inject_cycle}"
+    echo "is_append_first_task=${_is_append}"
+    echo "is_knn_enabled=${_is_knn}"
+    echo "is_mimetism_enabled=${_is_mimetism}"
   } > "$_dir/setting_tag.txt"
 }
 
@@ -359,7 +391,6 @@ SIM_PID=""
 AGENT_PIDS=()
 
 start_all_processes () {
-  # [DIAGNOSTIC CHANGE] Network Isolation for HPC
   export ROS_LOCALHOST_ONLY=1
   export ROS_DOMAIN_ID=$(( (RANDOM % 100) + 1 ))
 
@@ -377,6 +408,7 @@ start_all_processes () {
   local CUR_RHO_SHARED="$1"; shift
   local CUR_USE_UCB="$1"; shift
   local CUR_UCB_C="$1"; shift
+  local CUR_UCB_WINDOW="$1"; shift
   local CUR_REPLAY_BUFFER_SIZE="$1"; shift
   local CUR_TAU="$1"; shift
   local CUR_BATCH_SIZE="$1"; shift
@@ -387,6 +419,11 @@ start_all_processes () {
   local CUR_NUM_TO_KILL="$1"; shift
   local CUR_ENABLE_REVIVE="$1"; shift
   local CUR_REVIVE_TH="$1"; shift
+  local CUR_IS_FREE_WEIGHT_MATRIX="$1"; shift
+  local CUR_IS_INJECT_BEST_ON_CYCLE="$1"; shift
+  local CUR_IS_APPEND_FIRST_TASK="$1"; shift
+  local CUR_IS_KNN_ENABLED="$1"; shift
+  local CUR_IS_MIMETISM_ENABLED="$1"; shift
 
   LOGGER_LOG="$CONFIG_DIR/logger.log"
   LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
@@ -429,11 +466,17 @@ start_all_processes () {
       -p preserve_next_task:=${CUR_PRESERVE}
       -p use_ucb:=${CUR_USE_UCB}
       -p ucb_c:="$CUR_UCB_C"
+      -p ucb_window:="$CUR_UCB_WINDOW"
       -p inject_best_on_cycle:=${CUR_INJECT}
       -p inject_best_prob:="$CUR_INJECT_PROB"
       -p initialise_with_heuristic:="$INIT_WITH_HEURISTIC"
       -p problem_class:="$CUR_PROBLEM_CLASS"
       -p problem_seed:="$CUR_PROBLEM_SEED"
+      -p is_free_weight_matrix:=${CUR_IS_FREE_WEIGHT_MATRIX}
+      -p is_inject_best_on_cycle:=${CUR_IS_INJECT_BEST_ON_CYCLE}
+      -p is_append_first_task:=${CUR_IS_APPEND_FIRST_TASK}
+      -p is_knn_enabled:=${CUR_IS_KNN_ENABLED}
+      -p is_mimetism_enabled:=${CUR_IS_MIMETISM_ENABLED}
     )
     if [[ "$CUR_METHOD" == "Q-Learning" || "$CUR_METHOD" == "Double-Deep-Q" ]]; then
       CMD+=(
@@ -451,20 +494,21 @@ start_all_processes () {
         -p eta:="$CUR_ETA"
         -p rho:="$CUR_RHO_F"
       )
+    elif [[ "$CUR_METHOD" == "UCB" ]]; then
+      CMD+=(
+        -p rho:="$CUR_RHO_SHARED"
+      )
     fi
 
-    # LAUNCH IN PARALLEL (do not wait here)
     local pid
     pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
   done
 
-  # --- NEW: Verify All Agents Parallel ---
   echo "   [STARTUP] Waiting for $NUM_AGENTS agents to initialize (Parallel check)..."
   local start_wait=$(date +%s)
 
-  # track which agents are ready (0=no, 1=yes)
   local -a is_ready
   for ((i=0; i<NUM_AGENTS; i++)); do is_ready[$i]=0; done
 
@@ -473,12 +517,10 @@ start_all_processes () {
   while [ "$pending_count" -gt 0 ]; do
     local now=$(date +%s)
 
-    # [DIAGNOSTIC CHANGE] Enhanced Timeout with log dumping
     if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
       echo "[ERROR] Startup Timeout! The following agents failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
 
       echo "--- DIAGNOSTICS FOR FAILED AGENTS ---"
-      # Check dmesg for OOM kills
       dmesg | tail -n 20 | grep -i "kill" || echo "No recent kernel kills found in dmesg"
 
       for ((i=0; i<NUM_AGENTS; i++)); do
@@ -505,14 +547,11 @@ start_all_processes () {
         local pid=${AGENT_PIDS[$i]}
         local logf="${PID_LOG[$pid]}"
 
-        # 1. Check if crashed
         if ! kill -0 "$pid" 2>/dev/null; then
              echo "[ERROR] Agent $i (PID $pid) crashed immediately! (Process gone)"
-             # We could return 1 immediately, or wait to see if others crash
              return 1
         fi
 
-        # 2. Check logs
         if [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
              is_ready[$i]=1
              pending_count=$((pending_count - 1))
@@ -543,7 +582,6 @@ trap on_sigint INT
 trap on_sigterm TERM
 trap on_exit EXIT
 
-# >>> stuck detection globals <<<
 LAST_RUN_NUM=""
 SAME_RUN_COUNT=0
 
@@ -566,16 +604,17 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
     mkdir -p "$COMBO_ROOT"
 
     METHOD_TAG="$(slug "$METHOD")"
-    PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_inject_${INJECT}_pinj_${INJECT_BEST_PROB}_ucb_${USE_UCB}_ucbc_${UCB_C}_replay_${REPLAY_BUFFER_SIZE}_tau_${TAU}_batch_${BATCH_SIZE}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_heur_${INIT_WITH_HEURISTIC}"
+    PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_inject_${INJECT}_pinj_${INJECT_BEST_PROB}_ucb_${USE_UCB}_ucbc_${UCB_C}_ucbw_${UCB_WINDOW}_replay_${REPLAY_BUFFER_SIZE}_tau_${TAU}_batch_${BATCH_SIZE}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_heur_${INIT_WITH_HEURISTIC}_freewm_${IS_FREE_WEIGHT_MATRIX}_injectcyc_${IS_INJECT_BEST_ON_CYCLE}_append_${IS_APPEND_FIRST_TASK}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}"
     mkdir -p "$PARAM_DIR"
 
-    write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" \
+    write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
                           "$INJECT" "$INJECT_BEST_PROB" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" \
                           "$NEGATIVE_REWARD" "$RHO" "$ETA" "$REPLAY_BUFFER_SIZE" "$TAU" \
                           "$BATCH_SIZE" "$INIT_WITH_HEURISTIC" "$NUM_AGENTS" "$PROBLEM_SIZE" "$PROBLEM_CLASS" \
-                          "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH"
+                          "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH" \
+                          "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+                          "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
 
-    # startup recovery: check last run_* and re-run if incomplete
     LAST_RUN_DIR=""
     LAST_RUN_NUM_LOCAL=0
     if ls -d "$PARAM_DIR"/run_* >/dev/null 2>&1; then
@@ -602,37 +641,37 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
 
       RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
       echo "============================="
-      echo "[INFO] Run $run/$NUM_RUNS :: kill_enabled=$ENABLE_KILL :: kill_th=$KILL_TH :: revive_enabled=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: method=$METHOD lock=$LOCK preserve=$PRESERVE inject=$INJECT pinj=$INJECT_BEST_PROB gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO eta=$ETA replay=$REPLAY_BUFFER_SIZE tau=$TAU batch=$BATCH_SIZE ucb=$USE_UCB ucb_c=$UCB_C num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE heur=$INIT_WITH_HEURISTIC problem_class=$PROBLEM_CLASS seed=$RUN_SEED"
+      echo "[INFO] Run $run/$NUM_RUNS :: kill_enabled=$ENABLE_KILL :: kill_th=$KILL_TH :: revive_enabled=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: method=$METHOD lock=$LOCK preserve=$PRESERVE inject=$INJECT pinj=$INJECT_BEST_PROB gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO eta=$ETA replay=$REPLAY_BUFFER_SIZE tau=$TAU batch=$BATCH_SIZE ucb=$USE_UCB ucb_c=$UCB_C ucb_window=$UCB_WINDOW num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE heur=$INIT_WITH_HEURISTIC problem_class=$PROBLEM_CLASS seed=$RUN_SEED free_wm=$IS_FREE_WEIGHT_MATRIX inject_cyc=$IS_INJECT_BEST_ON_CYCLE append=$IS_APPEND_FIRST_TASK knn=$IS_KNN_ENABLED mimetism=$IS_MIMETISM_ENABLED"
       echo "============================="
 
       CONFIG_DIR="$PARAM_DIR/run_${run}"
       ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
       mkdir -p "$ROS2_LOG_DIR"
 
-      # [DIAGNOSTIC CHANGE] Call node profiler
       log_node_diagnostics "$CONFIG_DIR"
 
       write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$(unique_id)" \
-                          "$USE_UCB" "$UCB_C" "$INJECT" "$INJECT_BEST_PROB" "$PROBLEM_CLASS" \
-                          "$KILL_TH" "$REVIVE_TH"
+                          "$USE_UCB" "$UCB_C" "$UCB_WINDOW" "$INJECT" "$INJECT_BEST_PROB" \
+                          "$PROBLEM_CLASS" "$KILL_TH" "$REVIVE_TH" \
+                          "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+                          "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
 
-      # Capture return value of start_all_processes
       if ! start_all_processes \
             "$LOCK" "$PRESERVE" "$INJECT" "$INJECT_BEST_PROB" "$METHOD" \
             "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" \
             "$ETA" "$RHO" \
             "$RHO" \
-            "$USE_UCB" "$UCB_C" \
+            "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
             "$REPLAY_BUFFER_SIZE" "$TAU" "$BATCH_SIZE" "$PROBLEM_CLASS" "$RUN_SEED" \
             "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
-            "$ENABLE_REVIVE" "$REVIVE_TH"; then
+            "$ENABLE_REVIVE" "$REVIVE_TH" \
+            "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+            "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"; then
 
-        # If starting processes failed, cleanup and retry loop
         echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
         cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
         rm -rf "$CONFIG_DIR"
 
-        # Stuck detection
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
         else
@@ -687,7 +726,6 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
         rm -rf "$CONFIG_DIR"
         echo "[RETRY] Repeating run $run (kill_th=$KILL_TH, revive_th=$REVIVE_TH)"
 
-        # >>> stuck detection <<<
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
         else
@@ -698,12 +736,9 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
           echo "[FATAL] Run $run has failed $SAME_RUN_COUNT times. Exiting to avoid infinite loop."
           exit 1
         fi
-        # >>> end stuck detection <<<
-
         continue
       fi
 
-      # success: reset stuck detector
       LAST_RUN_NUM="$run"
       SAME_RUN_COUNT=0
 
