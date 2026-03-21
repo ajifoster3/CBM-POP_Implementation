@@ -946,21 +946,26 @@ UCB Parameters:
                 self.run_timer = self.create_timer(0.1, self.run_step, callback_group=self.me_cb_group)
                 self.is_loop_started = True
 
-            if self.problem.task_poses is not None and task is not None:
+            if self.problem.task_poses is not None and agent == self.agent_ID:
                 x = msg.x_position
                 y = msg.y_position
-                goal_x = self.problem.task_poses[task][0]
-                goal_y = self.problem.task_poses[task][1]
-                distance = math.sqrt(((x - goal_x) ** 2) + ((y - goal_y) ** 2))
 
-                if agent == self.agent_ID and distance < 0.1:
-                    self.__handle_covered_task(task)
+                # Cover any uncovered task within range, regardless of assignment.
+                COVERAGE_RADIUS = 0.1
+                newly_covered = []
+                for t_idx, (goal_x, goal_y) in enumerate(self.problem.task_poses):
+                    if self.is_covered[t_idx]:
+                        continue
+                    if math.sqrt((x - goal_x) ** 2 + (y - goal_y) ** 2) < COVERAGE_RADIUS:
+                        newly_covered.append(t_idx)
 
-                    # If we were locked to this task, unlock
-                    if self.is_task_locked:
-                        self.get_logger().info(f"[LOCK] Unlocking after reaching task={task}")
+                for t_idx in newly_covered:
+                    self.__handle_covered_task(t_idx)
+                    if self.is_task_locked and self.locked_task == t_idx:
+                        self.get_logger().info(f"[LOCK] Unlocking after reaching task={t_idx}")
                         self._reset_task_lock_state()
 
+                if newly_covered:
                     self.__assign_next_task(self.coalition_best_solution)
 
             if self.coalition_best_solution is not None and self.coalition_best_solution[1][self.agent_ID] == 0:
