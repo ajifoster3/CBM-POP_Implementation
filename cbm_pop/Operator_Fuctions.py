@@ -19,12 +19,6 @@ class OperatorFunctions:
             current_solution,
             cost_matrix,
             robot_cost_matrix, inital_robot_cost_matrix),
-        #Operator.ONE_MOVE_GRASP: lambda current_solution, cost_matrix, robot_cost_matrix,
-        #                          inital_robot_cost_matrix, grasp_alpha: OperatorFunctions.one_move_grasp(
-        #    current_solution,
-        #    cost_matrix,
-        #    robot_cost_matrix, inital_robot_cost_matrix,
-        #    alpha=grasp_alpha),
         Operator.BEST_COST_ROUTE_CROSSOVER: lambda current_solution,
                                                    population,
                                                    cost_matrix,
@@ -33,8 +27,6 @@ class OperatorFunctions:
         Operator.INTRA_DEPOT_REMOVAL: lambda current_solution: OperatorFunctions.intra_depot_removal(current_solution),
         Operator.INTRA_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.intra_depot_swapping(
             current_solution),
-        # Operator.INTER_DEPOT_SWAPPING: lambda current_solution: OperatorFunctions.inter_depot_swapping(
-        #    current_solution),
         Operator.SINGLE_ACTION_REROUTING: lambda current_solution, cost_matrix,
                                                  robot_cost_matrix, inital_robot_cost_matrix: OperatorFunctions.single_action_rerouting(
             current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix),
@@ -127,14 +119,6 @@ class OperatorFunctions:
                   or operator == Operator.NEAREST_K_RELOCATION):
                 return OperatorFunctions.operator_function_map[operator](current_copy, cost_matrix,
                                                                          robot_cost_matrix, inital_robot_cost_matrix)
-            #elif operator == Operator.ONE_MOVE_GRASP:
-            #    return OperatorFunctions.one_move_grasp(
-            #        current_copy,
-            #        cost_matrix,
-            #        robot_cost_matrix,
-            #        inital_robot_cost_matrix,
-            #        alpha=grasp_alpha  # <<< inject adaptive alpha
-            #    )
             else:
                 return OperatorFunctions.operator_function_map[operator](current_copy)
 
@@ -155,70 +139,54 @@ class OperatorFunctions:
         :param current_solution: The current solution as a parent
         :return: A child solution
         """
-        # Find the fittest solution in P that is not current_solution
-
-        # show identities + equality
-        for idx, sol in enumerate(population):
-            same_obj = (sol is current_solution)
-            same_val = (sol == current_solution)
-
-        # filter out current_solution
+        # Filter out current_solution by identity
         candidate_solutions = [sol for sol in population if sol is not current_solution]
-        # if you actually want to filter by value, use "!=" instead:
-        # candidate_solutions = [sol for sol in population if sol != current_solution]
-
 
         if not candidate_solutions:
             return current_solution
 
-        # compute fitnesses so we can see which one is chosen
-        fitness_list = []
-        for idx, sol in enumerate(candidate_solutions):
-            try:
-                f = Fitness.fitness_function_robot_pose(
-                    sol, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
-                )
-            except Exception as e:
-                f = float("inf")
-            fitness_list.append((f, sol))
+        # Find the fittest candidate
+        fittest_non_current_solution = min(
+            candidate_solutions,
+            key=lambda sol: Fitness.fitness_function_robot_pose(
+                sol, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+            ),
+        )
 
-            # pick best (lowest) fitness
-            fittest_non_current_f, fittest_non_current_solution = min(fitness_list, key=lambda x: x[0])
-
-            # Randomly select a path (route) from fittest_non_current_solution
-            task_order, agent_task_counts = fittest_non_current_solution
-            import random
-            selected_agent = random.randint(0, len(agent_task_counts) - 1)
-
-            start_index = sum(agent_task_counts[:selected_agent])
-            end_index = start_index + agent_task_counts[selected_agent]
-
-        # Extract the path for the selected agent
+        # Randomly select a route from the fittest donor
+        task_order, agent_task_counts = fittest_non_current_solution
+        selected_agent = random.randint(0, len(agent_task_counts) - 1)
+        start_index = sum(agent_task_counts[:selected_agent])
+        end_index = start_index + agent_task_counts[selected_agent]
         selected_path = task_order[start_index:end_index]
 
-        # Create a copy of current_solution to modify
+        if not selected_path:
+            return deepcopy(current_solution)
+
+        # Create a copy of current_solution and remove donor tasks
         new_solution_task_order, new_solution_task_counts = deepcopy(current_solution)
 
-        temp_count_counter = 0
-        temp_task_counter = 0
-        # For each agent
-        for i in new_solution_task_counts:
-            # For each task for that agent
-            for j in range(i):
-                if new_solution_task_order[temp_task_counter] in selected_path:
-                    new_solution_task_order.remove(new_solution_task_order[temp_task_counter])
-                    new_solution_task_counts[temp_count_counter] -= 1
-                    temp_task_counter -= 1
-                temp_task_counter += 1
-            temp_count_counter += 1
+        selected_set = set(selected_path)
+        # Build new order/counts by filtering each agent segment
+        filtered_order = []
+        filtered_counts = []
+        cursor = 0
+        for count in new_solution_task_counts:
+            seg = new_solution_task_order[cursor:cursor + count]
+            kept = [t for t in seg if t not in selected_set]
+            filtered_order.extend(kept)
+            filtered_counts.append(len(kept))
+            cursor += count
 
-        for task in selected_path[:]:  # Use a copy of selected_path to iterate safely
+        new_solution_task_order = filtered_order
+        new_solution_task_counts = filtered_counts
+
+        # Re-insert each donor task at the best position
+        for task in selected_path:
             OperatorFunctions.__find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order,
                                                         task, robot_cost_matrix, inital_robot_cost_matrix)
 
-        # Return the modified solution as the child solution
-        #print(f"new solutions: {new_solution_task_order}")
-        return new_solution_task_order, new_solution_task_counts  # TODO: new_solution_task_counts came out as [6,6] for a 10 task problem
+        return new_solution_task_order, new_solution_task_counts
 
     @staticmethod
     def __find_best_task_position(cost_matrix, new_solution_task_counts, new_solution_task_order, task,
@@ -297,12 +265,9 @@ class OperatorFunctions:
         # Randomly select two distinct agents (routes) to swap between
         agent1, agent2 = random.sample(range(len(agent_task_counts)), 2)
 
-        # Determine the task range for each agent
+        # Determine the task range for agent1
         start_index1 = sum(agent_task_counts[:agent1]) + 1
         end_index1 = start_index1 + agent_task_counts[agent1] - 1
-
-        start_index2 = sum(agent_task_counts[:agent2])
-        end_index2 = start_index2 + agent_task_counts[agent2]
 
         # Ensure the selected agent has tasks to swap
         if end_index1 > start_index1:
@@ -310,6 +275,10 @@ class OperatorFunctions:
             task_index = random.randint(start_index1, end_index1 - 1)
             task = task_order.pop(task_index)
             agent_task_counts[agent1] -= 1
+
+            # Recalculate agent2's range AFTER the pop (indices may have shifted)
+            start_index2 = sum(agent_task_counts[:agent2])
+            end_index2 = start_index2 + agent_task_counts[agent2]
 
             # Insert the task into a random position in agent2's route
             if end_index2 > start_index2:
@@ -373,11 +342,6 @@ class OperatorFunctions:
 
     # Intensifiers
 
-    # I can't tell the difference between ^ single_action_rerouting and one_move
-    # Single action rerouting: randomly select and action and insert at best place in chromosome
-    # One move: Remove a node and insert at position that maximises fitness
-    # Maybe we don't need single action rerouting either.
-
     @staticmethod
     def one_move(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
@@ -391,7 +355,6 @@ class OperatorFunctions:
         :param current_solution: The current solution to be optimised
         :return: A child solution
         """
-        # Deep copy to avoid modifying the original solution
         # Deep copy to avoid modifying the original solution
         task_order, agent_task_counts = deepcopy(current_solution)
 
@@ -590,8 +553,11 @@ class OperatorFunctions:
     @staticmethod
     def two_swap(current_solution, cost_matrix, robot_cost_matrix, inital_robot_cost_matrix):
         """
-        "Swapping two pairs of subsequent tasks (each pair as a unit) from two different agents
+        "Swapping two pairs of subsequent tasks (each pair as a unit)
         to improve solution fitness by minimizing traversal cost."
+
+        Considers swaps both within the same agent route and between
+        different agents.
 
         :param current_solution: The current solution to be optimized
         :param cost_matrix: The matrix used to calculate traversal costs
@@ -600,9 +566,12 @@ class OperatorFunctions:
         # Deep copy to avoid modifying the original solution
         task_order, agent_task_counts = deepcopy(current_solution)
 
-        # Initialize variables to track the best pair swap
-        best_fitness = float('inf')
-        best_swap = None  # Tuple of (first_agent, first_pair_start, second_agent, second_pair_start)
+        # Initialise to current fitness so we never accept a worsening swap
+        best_fitness = Fitness.fitness_function_robot_pose(
+            (task_order, agent_task_counts),
+            cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+        )
+        best_swap = None
 
         # Identify the start and end indices of tasks for each agent
         start_index = 0
@@ -611,41 +580,42 @@ class OperatorFunctions:
             agent_task_ranges.append((start_index, start_index + count - 1))
             start_index += count
 
-        # Loop through each pair of agents to consider swapping task pairs
-        for agent1, (start1, end1) in enumerate(agent_task_ranges):
-            # Skip if agent1 has fewer than 2 tasks
-            if end1 <= start1:
-                continue
+        # Collect all valid pair start indices across all agents
+        pair_starts = []
+        for agent, (start, end) in enumerate(agent_task_ranges):
+            if end <= start:
+                continue  # need at least 2 tasks for a pair
+            for i in range(start, end):  # i and i+1 form the pair
+                pair_starts.append(i)
 
-            for agent2, (start2, end2) in enumerate(agent_task_ranges):
-                # Skip if agent2 has fewer than 2 tasks or if it's the same agent
-                if agent1 >= agent2 or end2 <= start2:
+        # Consider every combination of two non-overlapping pairs
+        for pi in range(len(pair_starts)):
+            for pj in range(pi + 1, len(pair_starts)):
+                i = pair_starts[pi]
+                j = pair_starts[pj]
+
+                # Skip overlapping pairs (adjacent pairs within the same agent share a task)
+                if abs(i - j) < 2:
                     continue
 
-                # Generate all possible pairs of adjacent tasks for each agent
-                for i in range(start1, end1):
-                    if i + 1 > end1:
-                        continue  # Ensure we have a valid pair in agent1
-                    for j in range(start2, end2):
-                        if j + 1 > end2:
-                            continue  # Ensure we have a valid pair in agent2
+                # Make a temporary copy of task_order to apply the swap
+                temp_order = task_order[:]
 
-                        # Make a temporary copy of task_order to apply the swap
-                        temp_order = task_order[:]
+                # Swap the pairs: (task[i], task[i+1]) with (task[j], task[j+1])
+                temp_order[i], temp_order[i + 1], temp_order[j], temp_order[j + 1] = (
+                    temp_order[j], temp_order[j + 1], temp_order[i], temp_order[i + 1]
+                )
 
-                        # Swap the pairs: (task[i], task[i+1]) with (task[j], task[j+1])
-                        temp_order[i], temp_order[i + 1], temp_order[j], temp_order[j + 1] = (
-                            temp_order[j], temp_order[j + 1], temp_order[i], temp_order[i + 1]
-                        )
+                # Calculate the fitness after the swap
+                temp_fitness = Fitness.fitness_function_robot_pose(
+                    (temp_order, agent_task_counts),
+                    cost_matrix, robot_cost_matrix, inital_robot_cost_matrix
+                )
 
-                        # Calculate the fitness after the swap
-                        temp_fitness = Fitness.fitness_function_robot_pose((temp_order, agent_task_counts), cost_matrix,
-                                                                           robot_cost_matrix, inital_robot_cost_matrix)
-
-                        # Track the best swap if it improves fitness
-                        if temp_fitness < best_fitness:
-                            best_fitness = temp_fitness
-                            best_swap = (i, i + 1, j, j + 1)
+                # Track the best swap if it improves fitness
+                if temp_fitness < best_fitness:
+                    best_fitness = temp_fitness
+                    best_swap = (i, i + 1, j, j + 1)
 
         # Apply the best swap identified
         if best_swap is not None:
@@ -776,9 +746,8 @@ class OperatorFunctions:
         if not nonempty_agents:
             return task_order, agent_task_counts
 
-        counts = [agent_task_counts[i] for i in nonempty_agents]  # > 0
-        weights = [1.0 / c for c in counts]  # inverse count bias
-        target_agent = random.choices(nonempty_agents, k=1)[0]
+        weights = [1.0 / agent_task_counts[i] for i in nonempty_agents]
+        target_agent = random.choices(nonempty_agents, weights=weights, k=1)[0]
 
         cur_fit = current_fitness(task_order, agent_task_counts)
 
@@ -800,10 +769,6 @@ class OperatorFunctions:
                     key=lambda j: row[j]
                 )
 
-            # Exclude tasks currently in target route
-            #start_now, end_now = agent_range(agent_task_counts, target_agent)
-            #in_target = set(task_order[start_now:end_now])
-            #candidates = [c for c in nearest_all if c not in in_target][:k]
             candidates = [c for c in nearest_all][:k]
 
             best_candidate = None
@@ -931,6 +896,3 @@ class OperatorFunctions:
                 pos += 1
 
         return task_order, agent_task_counts
-
-
-

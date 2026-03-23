@@ -3,6 +3,7 @@
 
 import json
 import math
+import os
 import random
 import sys
 import traceback
@@ -124,6 +125,12 @@ UCB Parameters:
         self._proposal_stats = defaultdict(
             lambda: {"count": 0, "removed_uncovered": Counter(), "added_covered": Counter()}
         )
+
+        # DI-cycle logging (buffered, dumped on shutdown — extract with grep "[DI]")
+        self._di_cycle_index = 0
+        self._di_cycle_step_global = 0
+        self._di_log_buffer: list[str] = []
+        self._di_start_time = time()
 
         # -----------------------------
         # Task-locking / oscillation state
@@ -1307,6 +1314,70 @@ UCB Parameters:
         self.local_best_solution = deepcopy(c_new)
         self.best_local_improved = True
 
+    # ------------------------------------------------------------------
+    # DI-cycle history logging
+    # ------------------------------------------------------------------
+
+    def _log_di_cycle(self, terminated_by_stagnation: bool = False):
+        """Buffer one line per step. Dumped on shutdown via destroy_node.
+
+        Extract with: grep '\\[DI\\]' agent_*.log
+        Call BEFORE __finish_di_cycle() clears previous_experience.
+        """
+        all_ops = self.intensifiers + self.diversifiers
+        n_int = len(self.intensifiers)
+        op_names = {i: op.name for i, op in enumerate(all_ops)}
+
+        cumulative_gain = 0.0
+
+        for step, (condition, op_col, gain) in enumerate(self.previous_experience):
+            op_col = int(op_col)
+            cumulative_gain += gain
+            op_name = op_names.get(op_col, f"OP_{op_col}")
+            op_type = "I" if op_col < n_int else "D"
+
+            self._di_log_buffer.append(
+                f"[DI] t={time() - self._di_start_time:.3f}"
+                f" c={self._di_cycle_index}"
+                f" s={step}"
+                f" sg={self._di_cycle_step_global}"
+                f" it={self.iteration_count}"
+                f" ag={self.agent_ID}"
+                f" cond={condition}"
+                f" op={op_name}"
+                f" ot={op_type}"
+                f" g={gain:.6f}"
+                f" cg={cumulative_gain:.6f}"
+                f" li={int(self.best_local_improved)}"
+                f" ci={int(self.best_coalition_improved)}"
+                f" st={int(terminated_by_stagnation)}"
+            )
+            self._di_cycle_step_global += 1
+
+        self._di_cycle_index += 1
+
+    def _flush_di_log(self):
+        """Print all buffered DI-cycle lines to stdout (captured by the bash runner)."""
+        if not self._di_log_buffer:
+            return
+        print(f"[DI-DUMP] agent={self.agent_ID} lines={len(self._di_log_buffer)}")
+        for line in self._di_log_buffer:
+            print(line)
+        print(f"[DI-DUMP-END] agent={self.agent_ID}")
+        self._di_log_buffer.clear()
+
+    def destroy_node(self):
+        """Flush buffered DI-cycle data before tearing down the ROS node."""
+        try:
+            self._flush_di_log()
+        except Exception:
+            pass
+        super().destroy_node()
+
+    # ------------------------------------------------------------------
+    # End of DI cycle
+    # ------------------------------------------------------------------
+
     def __finish_di_cycle(self):
         if self.learning_method not in (LearningMethod.UNIFORM, LearningMethod.UCB):
             learning_method_switch = {
@@ -1335,7 +1406,6 @@ UCB Parameters:
                 if self.received_weight_matrices:
                     self.__mimetism_learning(self.received_weight_matrices, self.rho)
                     self.received_weight_matrices = []
-        print(self.weight_matrix.weights)
         # injection block
         if self.is_inject_best_on_cycle:
             try:
@@ -1611,12 +1681,14 @@ UCB Parameters:
             self._reinsert_child(c_new, replace_policy="better", fallback="worst")
             self.di_cycle_count += 1
 
-            if self.__end_of_di_cycle(self.di_cycle_count) or self.__is_stuck():
+            is_stagnant = self.__is_stuck()
+            if self.__end_of_di_cycle(self.di_cycle_count) or is_stagnant:
+                self._log_di_cycle(terminated_by_stagnation=is_stagnant)
                 self.__finish_di_cycle()
 
             self.iteration_count += 1
 
-import os, signal, threading, asyncio, faulthandler
+import signal, threading, asyncio, faulthandler
 
 
 def main(args=None):
