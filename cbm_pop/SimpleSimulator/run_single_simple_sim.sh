@@ -194,15 +194,20 @@ kill_pid_tree () {
 
 cleanup_run () {
   local logger_pid="$1"; shift
-  local sim_pid="$1"; shift
-  local -a agent_pids=("$@")
-  kill_pid_tree "$logger_pid"
-  kill_pid_tree "$sim_pid"
-  local p
-  for p in "${agent_pids[@]}"; do
-    kill_pid_tree "$p"
+  # collect sim pids until "--" sentinel
+  local -a sim_pids=()
+  while [[ "$1" != "--" && $# -gt 0 ]]; do
+    sim_pids+=("$1"); shift
   done
+  [[ "$1" == "--" ]] && shift   # consume sentinel
+  local -a agent_pids=("$@")
+
+  kill_pid_tree "$logger_pid"
+  for sp in "${sim_pids[@]}"; do kill_pid_tree "$sp"; done
+  for p  in "${agent_pids[@]}"; do kill_pid_tree "$p";  done
 }
+
+
 
 start_logged () {
   local logfile="$1"
@@ -230,7 +235,7 @@ decode_status () {
 check_first_dead () {
   FIRST_DEAD_PID=""
   local pid stat
-  for pid in "$LOGGER_PID" "$SIM_PID" "${AGENT_PIDS[@]}"; do
+  for pid in "$LOGGER_PID" "${SIM_PIDS[@]}" "${AGENT_PIDS[@]}"; do
     [ -z "$pid" ] && continue
     if ! ps -p "$pid" >/dev/null 2>&1; then
       FIRST_DEAD_PID="$pid"
@@ -387,7 +392,7 @@ write_param_tag_file () {
 declare -A PID_ROLE
 declare -A PID_LOG
 LOGGER_PID=""
-SIM_PID=""
+SIM_PID=()
 AGENT_PIDS=()
 
 start_all_processes () {
@@ -434,22 +439,30 @@ start_all_processes () {
       -p problem_size:="$PROBLEM_SIZE")
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
-  SIM_LOG="$CONFIG_DIR/simulator.log"
-  local -a SIM_CMD=(
-    ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE"
-    --num_robots "$NUM_AGENTS"
-    --problem_size "$PROBLEM_SIZE"
-    --problem_class "$CUR_PROBLEM_CLASS"
-    --problem_seed "$CUR_PROBLEM_SEED"
-  )
-  if [[ "$CUR_ENABLE_KILL" == "true" ]]; then
-    SIM_CMD+=( --enable_kill --kill_threshold "$CUR_KILL_TH" --num_to_kill "$CUR_NUM_TO_KILL" )
-  fi
-  if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
-    SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
-  fi
-  SIM_PID=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
-  PID_ROLE["$SIM_PID"]="simulator"; PID_LOG["$SIM_PID"]="$SIM_LOG"
+  SIM_PIDS=()
+  for ((r=0; r<NUM_AGENTS; r++)); do
+    local SIM_LOG="$CONFIG_DIR/simulator_${r}.log"
+    local -a SIM_CMD=(
+      ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE"
+      --robot_id "$r"
+      --num_robots "$NUM_AGENTS"
+      --problem_size "$PROBLEM_SIZE"
+      --problem_class "$CUR_PROBLEM_CLASS"
+      --problem_seed "$CUR_PROBLEM_SEED"
+      --no_gui
+    )
+    if [[ "$CUR_ENABLE_KILL" == "true" ]]; then
+      SIM_CMD+=( --enable_kill --kill_threshold "$CUR_KILL_TH" --num_to_kill "$CUR_NUM_TO_KILL" )
+    fi
+    if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
+      SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
+    fi
+    local spid
+    spid=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
+    SIM_PIDS+=("$spid")
+    PID_ROLE["$spid"]="simulator[$r]"
+    PID_LOG["$spid"]="$SIM_LOG"
+  done
 
   AGENT_PIDS=()
   for ((i=0; i<NUM_AGENTS; i++)); do
@@ -567,16 +580,16 @@ start_all_processes () {
 
 on_sigint () {
   echo "[SIGINT] Cleaning up processes..."
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
   exit 130
 }
 on_sigterm () {
   echo "[SIGTERM] Cleaning up processes..."
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
   exit 143
 }
 on_exit () {
-  cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
 }
 trap on_sigint INT
 trap on_sigterm TERM
@@ -669,7 +682,7 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
             "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"; then
 
         echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
-        cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+        cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
         rm -rf "$CONFIG_DIR"
 
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
@@ -719,7 +732,7 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
         fi
       done
 
-      cleanup_run "${LOGGER_PID:-}" "${SIM_PID:-}" "${AGENT_PIDS[@]:-}"
+      cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
 
       if ! check_coverage_complete "$CONFIG_DIR"; then
         echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
