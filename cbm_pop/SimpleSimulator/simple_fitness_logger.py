@@ -122,11 +122,11 @@ class SimpleFitnessLogger(Node):
         self.skipped_solutions = 0
         self.skip_reasons = Counter()
 
-        # Subscriptions
+        # ---- ALL TOPICS ARE RELATIVE for namespace isolation ----
         cb_group = ReentrantCallbackGroup()
         self.global_pose_subscribers = []
         for agent_id in range(self.num_tsp_agents):
-            topic = f'/central_control/uas_{agent_id}/global_pose'
+            topic = f'central_control/uas_{agent_id}/global_pose'
             sub = self.create_subscription(
                 SimplePosition,
                 topic,
@@ -136,22 +136,22 @@ class SimpleFitnessLogger(Node):
             )
             self.global_pose_subscribers.append(sub)
 
-        # Subscribe to best_solution immediately (don’t gate on poses)
+        # Subscribe to best_solution immediately (don't gate on poses)
         self.solution_subscriber = self.create_subscription(
             Solution, 'best_solution', self.solution_update_callback, 10
         )
 
         self.finished_coverage_sub = self.create_subscription(
-            FinishedCoverage, '/central_control/finished_coverage', self.finished_coverage_callback, 10
+            FinishedCoverage, 'central_control/finished_coverage', self.finished_coverage_callback, 10
         )
         self.cumulative_reward_subscriber = self.create_subscription(
-            CumulativeReward, '/cumulative_reward', self.cumulative_reward_callback, 10
+            CumulativeReward, 'cumulative_reward', self.cumulative_reward_callback, 10
         )
         self.current_task_subscriber = self.create_subscription(
             CurrentTask, 'current_task', self.current_task_update_callback, 10
         )
         self.environmental_subscriber = self.create_subscription(
-            EnvironmentalRepresentation, '/environmental_representation', self.environmental_representation_callback, 10
+            EnvironmentalRepresentation, 'environmental_representation', self.environmental_representation_callback, 10
         )
 
         self.environmental_representation_state = [False] * (self.problem_size * self.problem_size)

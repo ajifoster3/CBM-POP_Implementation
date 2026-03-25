@@ -49,14 +49,14 @@ class SimulatorRobot(Node):
 
         # Publishers / Subscribers
         self.global_pose_publisher = self.create_publisher(
-            SimplePosition, f'/central_control/uas_{self.robot_id}/global_pose', 10
+            SimplePosition, f'central_control/uas_{self.robot_id}/global_pose', 10
         )
         self.goal_pose_subscriber = self.create_subscription(
-            SimplePosition, f'/central_control/uas_{self.robot_id}/goal_pose',
+            SimplePosition, f'central_control/uas_{self.robot_id}/goal_pose',
             self.goal_pose_callback, 10
         )
         self.finished_coverage_sub = self.create_subscription(
-            FinishedCoverage, '/central_control/finished_coverage',
+            FinishedCoverage, 'central_control/finished_coverage',
             self.finished_coverage_callback, 10
         )
 

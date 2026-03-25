@@ -396,8 +396,6 @@ SIM_PID=()
 AGENT_PIDS=()
 
 start_all_processes () {
-  export ROS_LOCALHOST_ONLY=1
-  export ROS_DOMAIN_ID=$(( (RANDOM % 100) + 1 ))
 
   local CUR_LOCK="$1"; shift
   local CUR_PRESERVE="$1"; shift
@@ -430,10 +428,14 @@ start_all_processes () {
   local CUR_IS_KNN_ENABLED="$1"; shift
   local CUR_IS_MIMETISM_ENABLED="$1"; shift
 
+  # -- Per-run unique ROS2 namespace to isolate topic traffic --
+  local CUR_NS="$RUN_NS"
+
   LOGGER_LOG="$CONFIG_DIR/logger.log"
   LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
       --ros-args \
+      -r __ns:="/$CUR_NS" \
       -p parent_log_dir:="'$CONFIG_DIR'" \
       -p num_tsp_agents:="$NUM_AGENTS" \
       -p problem_size:="$PROBLEM_SIZE")
@@ -457,6 +459,8 @@ start_all_processes () {
     if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
       SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
     fi
+    # Namespace via --ros-args (parsed by rclpy.init via sys.argv)
+    SIM_CMD+=( --ros-args -r __ns:="/$CUR_NS" )
     local spid
     spid=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
     SIM_PIDS+=("$spid")
@@ -470,6 +474,7 @@ start_all_processes () {
     local -a CMD=(
       ros2 run "$PACKAGE_NAME" "$AGENT_EXECUTABLE"
       --ros-args
+      -r __ns:="/$CUR_NS"
       -p agent_id:="$i"
       -p runtime:="$RUNTIME"
       -p learning_method:="'${CUR_METHOD}'"
@@ -520,6 +525,7 @@ start_all_processes () {
   done
 
   echo "   [STARTUP] Waiting for $NUM_AGENTS agents to initialize (Parallel check)..."
+  echo "   [STARTUP] ROS namespace: /$CUR_NS"
   local start_wait=$(date +%s)
 
   local -a is_ready
@@ -653,8 +659,14 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
     while [ "$run" -le "$NUM_RUNS" ]; do
 
       RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
+
+      # ---- Generate a unique ROS2 namespace for this run ----
+      # Combines run number, nanosecond timestamp, PID, and RANDOM to
+      # guarantee uniqueness even across concurrent HPC jobs on the same node.
+      RUN_NS="run${run}_$(date +%s%N)_$$_${RANDOM}"
+
       echo "============================="
-      echo "[INFO] Run $run/$NUM_RUNS :: kill_enabled=$ENABLE_KILL :: kill_th=$KILL_TH :: revive_enabled=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: method=$METHOD lock=$LOCK preserve=$PRESERVE inject=$INJECT pinj=$INJECT_BEST_PROB gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO eta=$ETA replay=$REPLAY_BUFFER_SIZE tau=$TAU batch=$BATCH_SIZE ucb=$USE_UCB ucb_c=$UCB_C ucb_window=$UCB_WINDOW num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE heur=$INIT_WITH_HEURISTIC problem_class=$PROBLEM_CLASS seed=$RUN_SEED free_wm=$IS_FREE_WEIGHT_MATRIX inject_cyc=$IS_INJECT_BEST_ON_CYCLE append=$IS_APPEND_FIRST_TASK knn=$IS_KNN_ENABLED mimetism=$IS_MIMETISM_ENABLED"
+      echo "[INFO] Run $run/$NUM_RUNS :: ns=$RUN_NS :: kill_enabled=$ENABLE_KILL :: kill_th=$KILL_TH :: revive_enabled=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: method=$METHOD lock=$LOCK preserve=$PRESERVE inject=$INJECT pinj=$INJECT_BEST_PROB gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO eta=$ETA replay=$REPLAY_BUFFER_SIZE tau=$TAU batch=$BATCH_SIZE ucb=$USE_UCB ucb_c=$UCB_C ucb_window=$UCB_WINDOW num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE heur=$INIT_WITH_HEURISTIC problem_class=$PROBLEM_CLASS seed=$RUN_SEED free_wm=$IS_FREE_WEIGHT_MATRIX inject_cyc=$IS_INJECT_BEST_ON_CYCLE append=$IS_APPEND_FIRST_TASK knn=$IS_KNN_ENABLED mimetism=$IS_MIMETISM_ENABLED"
       echo "============================="
 
       CONFIG_DIR="$PARAM_DIR/run_${run}"

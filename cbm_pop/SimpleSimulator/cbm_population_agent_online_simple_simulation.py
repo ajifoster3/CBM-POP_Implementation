@@ -262,6 +262,8 @@ UCB Parameters:
         self.cb_group = ReentrantCallbackGroup()
         self.me_cb_group = MutuallyExclusiveCallbackGroup()
 
+        # ---- ALL TOPICS ARE RELATIVE for namespace isolation ----
+
         # ROS publishers and subscribers
         self.solution_publisher = self.create_publisher(Solution, "best_solution", 10)
         self.solution_subscriber = self.create_subscription(
@@ -282,23 +284,23 @@ UCB Parameters:
                 1, self.regular_current_task_publish_timer, callback_group=self.cb_group
             )
 
-        # kill/revive topics
+        # kill/revive topics (RELATIVE — no leading slash)
         self.kill_robot_subscribers = []
         for rid in range(self.num_tsp_agents):
-            topic = f"/central_control/uas_{rid}/kill_robot"
+            topic = f"central_control/uas_{rid}/kill_robot"
             sub = self.create_subscription(
                 Bool, topic, lambda msg, agent=rid: self.kill_robot_callback(msg, agent), 10
             )
             self.kill_robot_subscribers.append(sub)
 
         self.revive_robot_sub = self.create_subscription(
-            Bool, f"/central_control/uas_{agent_id}/revive_robot", self.revive_robot_callback, 10
+            Bool, f"central_control/uas_{agent_id}/revive_robot", self.revive_robot_callback, 10
         )
 
-        # Global pose subscribers
+        # Global pose subscribers (RELATIVE — no leading slash)
         self.global_pose_subscribers = []
         for rid in range(self.num_tsp_agents):
-            topic = f"/central_control/uas_{rid}/global_pose"
+            topic = f"central_control/uas_{rid}/global_pose"
             sub = self.create_subscription(
                 SimplePosition,
                 topic,
@@ -308,17 +310,17 @@ UCB Parameters:
             )
             self.global_pose_subscribers.append(sub)
 
-        # Goal publisher
+        # Goal publisher (RELATIVE — no leading slash)
         self.goal_pose_publisher = self.create_publisher(
-            SimplePosition, f"/central_control/uas_{agent_id}/goal_pose", 10
+            SimplePosition, f"central_control/uas_{agent_id}/goal_pose", 10
         )
 
-        # Finished coverage pub/sub
+        # Finished coverage pub/sub (RELATIVE — no leading slash)
         self.finished_coverage_pub = self.create_publisher(
-            FinishedCoverage, f"/central_control/finished_coverage", 10
+            FinishedCoverage, "central_control/finished_coverage", 10
         )
         self.finished_coverage_sub = self.create_subscription(
-            FinishedCoverage, f"/central_control/finished_coverage", self.__finished_coverage_callback, 10
+            FinishedCoverage, "central_control/finished_coverage", self.__finished_coverage_callback, 10
         )
 
         # Timers
@@ -326,15 +328,16 @@ UCB Parameters:
             0.5, self.__publish_goal_pose, callback_group=self.cb_group
         )
 
+        # Environmental representation (RELATIVE — no leading slash)
         self.environmental_representation_subscriber = self.create_subscription(
             EnvironmentalRepresentation,
-            "/environmental_representation",
+            "environmental_representation",
             self.__environmental_representation_callback,
             40,
             callback_group=self.cb_group,
         )
         self.environmental_representation_publisher = self.create_publisher(
-            EnvironmentalRepresentation, "/environmental_representation", 10
+            EnvironmentalRepresentation, "environmental_representation", 10
         )
         self.environmental_representation_timer = self.create_timer(
             2, self.__environmental_representation_timer_callback, callback_group=self.cb_group
@@ -1510,10 +1513,11 @@ UCB Parameters:
                 2, self.__regular_solution_publish_timer, callback_group=self.cb_group
             )
 
+        # Environmental representation re-subscription (RELATIVE — no leading slash)
         if self.environmental_representation_subscriber is None:
             self.environmental_representation_subscriber = self.create_subscription(
                 EnvironmentalRepresentation,
-                "/environmental_representation",
+                "environmental_representation",
                 self.__environmental_representation_callback,
                 40,
                 callback_group=self.cb_group,

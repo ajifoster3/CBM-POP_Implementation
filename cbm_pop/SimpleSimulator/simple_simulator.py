@@ -194,9 +194,10 @@ class SimpleSimulator:
     def start_listeners(self, node):
         self.listener_node = node
 
+        # ---- TOPICS ARE RELATIVE so ROS2 namespace resolution applies ----
         self.coverage_subscriber = node.create_subscription(
             EnvironmentalRepresentation,
-            '/environmental_representation',
+            'environmental_representation',
             self.environmental_representation_callback,
             10,
             callback_group=ReentrantCallbackGroup()
@@ -218,7 +219,7 @@ class SimpleSimulator:
             for i in range(self.number_to_kill):
                 self.kill_pubs.append(node.create_publisher(
                     Bool,
-                    f"/central_control/uas_{self.num_robots_total - 1 - i}/kill_robot",
+                    f"central_control/uas_{self.num_robots_total - 1 - i}/kill_robot",
                     10
                 ))
 
@@ -226,7 +227,7 @@ class SimpleSimulator:
             for i in range(self.number_to_revive):
                 self.revive_pubs.append(node.create_publisher(
                     Bool,
-                    f"/central_control/uas_{self.num_robots_total - 1 - i}/revive_robot",
+                    f"central_control/uas_{self.num_robots_total - 1 - i}/revive_robot",
                     10
                 ))
 
@@ -299,7 +300,9 @@ def main():
     parser.add_argument('--enable_revive', action='store_true')
     parser.add_argument('--revive_threshold', type=float, default=0.80)
 
-    args = parser.parse_args()
+    # Use parse_known_args so --ros-args (namespace, remappings etc.) pass
+    # through to rclpy.init() without argparse raising an error.
+    args, _ = parser.parse_known_args()
 
     split_mode = args.robot_id is not None
 
