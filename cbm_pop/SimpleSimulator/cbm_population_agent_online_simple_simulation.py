@@ -961,22 +961,23 @@ UCB Parameters:
                 y = msg.y_position
 
                 # Cover any uncovered task within range, regardless of assignment.
-                COVERAGE_RADIUS = 0.1
-                newly_covered = []
-                for t_idx, (goal_x, goal_y) in enumerate(self.problem.task_poses):
-                    if self.is_covered[t_idx]:
-                        continue
-                    if math.sqrt((x - goal_x) ** 2 + (y - goal_y) ** 2) < COVERAGE_RADIUS:
-                        newly_covered.append(t_idx)
+                if not self.am_i_failed:
+                    COVERAGE_RADIUS = 0.1
+                    newly_covered = []
+                    for t_idx, (goal_x, goal_y) in enumerate(self.problem.task_poses):
+                        if self.is_covered[t_idx]:
+                            continue
+                        if math.sqrt((x - goal_x) ** 2 + (y - goal_y) ** 2) < COVERAGE_RADIUS:
+                            newly_covered.append(t_idx)
 
-                for t_idx in newly_covered:
-                    self.__handle_covered_task(t_idx)
-                    if self.is_task_locked and self.locked_task == t_idx:
-                        self.get_logger().info(f"[LOCK] Unlocking after reaching task={t_idx}")
-                        self._reset_task_lock_state()
+                    for t_idx in newly_covered:
+                        self.__handle_covered_task(t_idx)
+                        if self.is_task_locked and self.locked_task == t_idx:
+                            self.get_logger().info(f"[LOCK] Unlocking after reaching task={t_idx}")
+                            self._reset_task_lock_state()
 
-                if newly_covered:
-                    self.__assign_next_task(self.coalition_best_solution)
+                    if newly_covered:
+                        self.__assign_next_task(self.coalition_best_solution)
 
             if self.coalition_best_solution is not None and self.coalition_best_solution[1][self.agent_ID] == 0:
                 x = msg.x_position
@@ -1474,6 +1475,7 @@ UCB Parameters:
     def kill_robot_callback(self, msg, failed_agent_id):
         print(f"Kill signal received for agent: {failed_agent_id}")
         if failed_agent_id == self.agent_ID and self.am_i_failed is False:
+            print("I, agent " + str(self.agent_ID) + " am Failed")
             self.am_i_failed = True
             self.failed_agents[self.agent_ID] = True
             if msg.data:
