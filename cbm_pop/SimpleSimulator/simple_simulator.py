@@ -243,6 +243,7 @@ class SimpleSimulator:
                 total_tasks = len(self.is_covered)
                 if total_tasks > 0 and (sum(self.is_covered) / total_tasks) >= self.kill_threshold:
                     for pub in self.kill_pubs:
+                        print("Killing robot")
                         for _ in range(4):
                             kill_msg = Bool()
                             kill_msg.data = True
@@ -296,7 +297,7 @@ def main():
 
     parser.add_argument('--enable_kill', action='store_true')
     parser.add_argument('--kill_threshold', type=float, default=0.20)
-    parser.add_argument('--num_to_kill', type=float, default=1)
+    parser.add_argument('--num_to_kill', type=int, default=1)
     parser.add_argument('--enable_revive', action='store_true')
     parser.add_argument('--revive_threshold', type=float, default=0.80)
 
