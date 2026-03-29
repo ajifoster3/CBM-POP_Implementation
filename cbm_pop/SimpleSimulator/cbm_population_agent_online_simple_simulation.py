@@ -42,6 +42,7 @@ from cbm_pop.SimpleSimulator.simple_problem import SimpleProblem, ProblemClass
 class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
     Q_LEARNING = "Q-Learning"
+    Q_LEARNING_STEP = "Q-Learning-Step"
     UNIFORM = "Uniform"
     UCB = "UCB"
 
@@ -774,6 +775,16 @@ UCB Parameters:
 
         return self.weight_matrix.weights
 
+    def __individual_learning_step(self, condition, op_col, step_improved_local):
+        row = condition
+        col = int(op_col)
+        current_q = self.weight_matrix.weights[row][col]
+        max_next_q = max(self.weight_matrix.weights[row])
+        reward = self.positive_reward if step_improved_local else self.negative_reward
+        updated_q = current_q + self.lr * (reward + self.gamma_decay * max_next_q - current_q)
+        updated_q = max(updated_q, 1e-6)
+        self.weight_matrix.weights[row][col] = updated_q
+
     def __mimetism_learning(self, received_weights, rho):
         for weight_set in received_weights:
             if len(weight_set) != len(self.weight_matrix.weights) or len(weight_set[0]) != len(
@@ -1384,15 +1395,16 @@ UCB Parameters:
 
     def __finish_di_cycle(self):
         if self.learning_method not in (LearningMethod.UNIFORM, LearningMethod.UCB):
-            learning_method_switch = {
-                LearningMethod.FERREIRA: self.__individual_learning_old,
-                LearningMethod.Q_LEARNING: self.__individual_learning,
-            }
-            learning_function = learning_method_switch.get(self.learning_method)
-            if learning_function:
-                self.weight_matrix.weights = learning_function()
-            else:
-                self.get_logger().error(f"[CHK] Unknown learning method: {self.learning_method}")
+            if self.learning_method != LearningMethod.Q_LEARNING_STEP:
+                learning_method_switch = {
+                    LearningMethod.FERREIRA: self.__individual_learning_old,
+                    LearningMethod.Q_LEARNING: self.__individual_learning,
+                }
+                learning_function = learning_method_switch.get(self.learning_method)
+                if learning_function:
+                    self.weight_matrix.weights = learning_function()
+                else:
+                    self.get_logger().error(f"[CHK] Unknown learning method: {self.learning_method}")
 
             self.best_local_improved = False
 
@@ -1674,13 +1686,18 @@ UCB Parameters:
             if self.learning_method == LearningMethod.UCB:
                 self.ucb_bandit.update(op_idx, -gain)
 
-            if self.local_best_solution is None or new_f < loc_f:
+            step_improved_local = loc_f is None or new_f < loc_f
+            if step_improved_local:
                 self.__update_local_best(c_new)
                 self.no_improvement_attempt_count = 0
             else:
                 self.no_improvement_attempt_count += 1
 
-            if self.coalition_best_solution is None or new_f < coal_f:
+            if self.learning_method == LearningMethod.Q_LEARNING_STEP:
+                op_order = self.intensifiers + self.diversifiers
+                self.__individual_learning_step(condition, op_order.index(operator), step_improved_local)
+
+            if coal_f is None or new_f < coal_f:
                 self.__update_publish_coalition_best(c_new)
 
             self.current_solution = c_new
