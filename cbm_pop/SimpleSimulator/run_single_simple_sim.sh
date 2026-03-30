@@ -566,11 +566,34 @@ start_all_processes () {
       echo "--- DIAGNOSTICS FOR FAILED PROCESSES ---"
       dmesg | tail -n 20 | grep -i "kill" || echo "No recent kernel kills found in dmesg"
 
+      # Helper: print /proc info for a stalled pid
+      _dump_proc_state () {
+        local _pid="$1" _label="$2"
+        echo "  [PROC] $(_label) PID=$_pid"
+        # Process state (D=uninterruptible I/O wait, S=sleeping, R=running, Z=zombie)
+        echo "  stat:  $(ps -o pid=,stat=,wchan= -p "$_pid" 2>/dev/null || echo 'process gone')"
+        # Kernel function the process is blocked in
+        echo "  wchan: $(cat /proc/"$_pid"/wchan 2>/dev/null || echo 'n/a')"
+        # Which executable/script is actually running (reveals if ros2 run stalled before exec)
+        echo "  exe:   $(readlink /proc/"$_pid"/exe 2>/dev/null || echo 'n/a')"
+        echo "  cmd:   $(tr '\0' ' ' </proc/"$_pid"/cmdline 2>/dev/null || echo 'n/a')"
+        # Open file descriptors — reveals if it is stuck on a filesystem path
+        echo "  fds:"; ls -la /proc/"$_pid"/fd 2>/dev/null | tail -n 15 || echo "  (cannot read fds)"
+        # Any child processes (ros2 run may have spawned the Python node as a child)
+        local _children
+        _children=$(ps -o pid=,stat=,wchan=,cmd= --ppid "$_pid" 2>/dev/null)
+        if [ -n "$_children" ]; then
+          echo "  children:"
+          echo "$_children" | sed 's/^/    /'
+        fi
+      }
+
       for ((i=0; i<NUM_AGENTS; i++)); do
         if [ "${sim_ready[$i]}" -eq 0 ]; then
              local spid=${SIM_PIDS[$i]}
              local slogf="${PID_LOG[$spid]}"
              echo ">>> SIMULATOR $i (PID $spid) LOG DUMP START <<<"
+             _dump_proc_state "$spid" "simulator[$i]"
              if [ -f "$slogf" ]; then
                  echo "--- HEAD (First 20 lines) ---"
                  head -n 20 "$slogf"
@@ -585,6 +608,7 @@ start_all_processes () {
              local pid=${AGENT_PIDS[$i]}
              local logf="${PID_LOG[$pid]}"
              echo ">>> AGENT $i (PID $pid) LOG DUMP START <<<"
+             _dump_proc_state "$pid" "agent[$i]"
              if [ -f "$logf" ]; then
                  echo "--- HEAD (First 20 lines) ---"
                  head -n 20 "$logf"
