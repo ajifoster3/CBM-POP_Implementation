@@ -569,7 +569,7 @@ start_all_processes () {
       # Helper: print /proc info for a stalled pid
       _dump_proc_state () {
         local _pid="$1" _label="$2"
-        echo "  [PROC] $(_label) PID=$_pid"
+        echo "  [PROC] $_label PID=$_pid"
         # Process state (D=uninterruptible I/O wait, S=sleeping, R=running, Z=zombie)
         echo "  stat:  $(ps -o pid=,stat=,wchan= -p "$_pid" 2>/dev/null || echo 'process gone')"
         # Kernel function the process is blocked in
