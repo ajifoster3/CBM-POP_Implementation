@@ -38,7 +38,7 @@ AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 
 AGENT_INIT_MSG="["
-AGENT_STARTUP_TIMEOUT=30
+AGENT_STARTUP_TIMEOUT=60
 
 RUNTIME=-1.0
 TIMEOUT_SECONDS=300
@@ -542,6 +542,7 @@ start_all_processes () {
     pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
+    sleep 0.3   # stagger DDS init to avoid contention
   done
 
   # Ready marker for simulators: printed by simple_simulator.py after SimulatorRobot is created
