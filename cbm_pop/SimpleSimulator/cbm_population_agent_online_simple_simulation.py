@@ -43,6 +43,7 @@ class LearningMethod(Enum):
     FERREIRA = "Ferreira_et_al."
     Q_LEARNING = "Q-Learning"
     Q_LEARNING_STEP = "Q-Learning-Step"
+    Q_LEARNING_SEPARATE = "Q-Learning-Separate"
     UNIFORM = "Uniform"
     UCB = "UCB"
 
@@ -785,6 +786,52 @@ UCB Parameters:
         updated_q = max(updated_q, 1e-6)
         self.weight_matrix.weights[row][col] = updated_q
 
+    def __individual_learning_diversifiers(self):
+        n_int = len(self.intensifiers)
+        cumulative_gains = []
+        total_gain = 0
+        for _, _, gain in self.previous_experience:
+            total_gain += gain
+            cumulative_gains.append(total_gain)
+
+        if self.best_local_improved and cumulative_gains:
+            min_fitness_index = cumulative_gains.index(min(cumulative_gains))
+        else:
+            min_fitness_index = len(self.previous_experience)
+
+        seen_pairs = set()
+        for i in range(min_fitness_index):
+            condition, op_col, _gain = self.previous_experience[i]
+            row = condition
+            col = int(op_col)
+
+            if col < n_int:
+                continue
+
+            key = (row, col)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+
+            current_q = self.weight_matrix.weights[row][col]
+            if i + 1 < len(self.previous_experience):
+                next_condition = self.previous_experience[i + 1][0]
+                max_next_q = max(self.weight_matrix.weights[next_condition])
+            else:
+                max_next_q = 0
+
+            self.reward = self.positive_reward if self.best_local_improved else self.negative_reward
+            updated_q = current_q + self.lr * (self.reward + self.gamma_decay * max_next_q - current_q)
+            updated_q = max(updated_q, 1e-6)
+            self.weight_matrix.weights[row][col] = updated_q
+            print(
+                f"[QLS-SEP-CYCLE] agent={self.agent_ID} iter={self.iteration_count}"
+                f" diversifier_col={col} cond={row} improved={int(self.best_local_improved)}"
+                f" reward={self.reward:.3f} q:{current_q:.4f}->{updated_q:.4f}"
+            )
+
+        return self.weight_matrix.weights
+
     def __mimetism_learning(self, received_weights, rho):
         for weight_set in received_weights:
             if len(weight_set) != len(self.weight_matrix.weights) or len(weight_set[0]) != len(
@@ -1399,6 +1446,7 @@ UCB Parameters:
                 learning_method_switch = {
                     LearningMethod.FERREIRA: self.__individual_learning_old,
                     LearningMethod.Q_LEARNING: self.__individual_learning,
+                    LearningMethod.Q_LEARNING_SEPARATE: self.__individual_learning_diversifiers,
                 }
                 learning_function = learning_method_switch.get(self.learning_method)
                 if learning_function:
@@ -1696,6 +1744,15 @@ UCB Parameters:
             if self.learning_method == LearningMethod.Q_LEARNING_STEP:
                 op_order = self.intensifiers + self.diversifiers
                 self.__individual_learning_step(condition, op_order.index(operator), step_improved_local)
+            elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE and operator in self.intensifiers:
+                op_order = self.intensifiers + self.diversifiers
+                op_col = op_order.index(operator)
+                self.__individual_learning_step(condition, op_col, step_improved_local)
+                print(
+                    f"[QLS-SEP-STEP] agent={self.agent_ID} iter={self.iteration_count}"
+                    f" intensifier={operator.name} cond={condition} op={op_col}"
+                    f" improved={int(step_improved_local)}"
+                )
 
             if coal_f is None or new_f < coal_f:
                 self.__update_publish_coalition_best(c_new)

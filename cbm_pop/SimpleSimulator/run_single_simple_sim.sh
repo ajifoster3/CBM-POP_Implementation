@@ -306,7 +306,7 @@ write_run_settings () {
     echo "is_append_first_task=${_is_append}"
     echo "is_knn_enabled=${_is_knn}"
     echo "is_mimetism_enabled=${_is_mimetism}"
-    if [[ "$_method" == "Q-Learning" || "$_method" == "Double-Deep-Q" || "$_method" == "UCB" ]]; then
+    if [[ "$_method" == "Q-Learning" || "$_method" == "Q-Learning-Step" || "$_method" == "Q-Learning-Separate" || "$_method" == "Double-Deep-Q" || "$_method" == "UCB" ]]; then
       echo "gamma_decay=${GAMMA_DECAY}"
       echo "lr=${LR}"
       echo "positive_reward=${POSITIVE_REWARD}"
@@ -496,7 +496,7 @@ start_all_processes () {
       -p is_knn_enabled:=${CUR_IS_KNN_ENABLED}
       -p is_mimetism_enabled:=${CUR_IS_MIMETISM_ENABLED}
     )
-    if [[ "$CUR_METHOD" == "Q-Learning" || "$CUR_METHOD" == "Double-Deep-Q" ]]; then
+    if [[ "$CUR_METHOD" == "Q-Learning" || "$CUR_METHOD" == "Q-Learning-Step" || "$CUR_METHOD" == "Q-Learning-Separate" || "$CUR_METHOD" == "Double-Deep-Q" ]]; then
       CMD+=(
         -p lr:="$CUR_LR"
         -p gamma_decay:="$CUR_GAMMA"
@@ -747,10 +747,6 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
       cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
 
       if ! check_coverage_complete "$CONFIG_DIR"; then
-        echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
-        rm -rf "$CONFIG_DIR"
-        echo "[RETRY] Repeating run $run (kill_th=$KILL_TH, revive_th=$REVIVE_TH)"
-
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
         else
@@ -759,8 +755,12 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
         fi
         if [ "$SAME_RUN_COUNT" -ge 5 ]; then
           echo "[FATAL] Run $run has failed $SAME_RUN_COUNT times. Exiting to avoid infinite loop."
+          echo "[DEBUG] Preserving final failed run directory for inspection: $CONFIG_DIR"
           exit 1
         fi
+        echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
+        rm -rf "$CONFIG_DIR"
+        echo "[RETRY] Repeating run $run (kill_th=$KILL_TH, revive_th=$REVIVE_TH)"
         continue
       fi
 
