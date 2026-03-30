@@ -570,7 +570,10 @@ UCB Parameters:
         return population
 
     def __update_coalition_best(self, solution):
+        first_time = self.coalition_best_solution is None
         self.coalition_best_solution = deepcopy(solution)
+        if first_time:
+            print(f"[COALITION-INIT] agent={self.agent_ID} first coalition_best set alloc={solution[1] if solution else None}")
         if not self.lock_mode or self.current_task is None:
             self.__assign_next_task(solution)
 
@@ -987,6 +990,11 @@ UCB Parameters:
             agent = msg.robot_id
             if self.initial_robot_poses[agent] is None:
                 self.initial_robot_poses[agent] = (msg.x_position, msg.y_position)
+                received_count = sum(1 for p in self.robot_poses if p is not None) + 1
+                print(
+                    f"[POSE-RECV] agent={self.agent_ID} first_pose_from={agent}"
+                    f" now_have={received_count}/{self.num_tsp_agents}"
+                )
 
             task = deepcopy(self.current_task)
 
@@ -998,6 +1006,7 @@ UCB Parameters:
                 and self.is_loop_started is False
                 and self.is_all_poses is False
             ):
+                print(f"[POSE-ALL-RECV] agent={self.agent_ID} all {self.num_tsp_agents} poses received — starting")
                 self.is_all_poses = True
                 self.problem.update_robot_cost_matrix(self.robot_poses)
                 self.problem.initialize_robot_initial_pose_cost_matrix(self.initial_robot_poses)
@@ -1010,6 +1019,8 @@ UCB Parameters:
                         else:
                             self.population = self.__generate_population()
                         self.current_parent_idx, self.current_solution = self.__select_solution()
+
+                        self.__update_publish_coalition_best(self.current_solution)
 
                 self.run_timer = self.create_timer(0.1, self.run_step, callback_group=self.me_cb_group)
                 self.is_loop_started = True
@@ -1298,7 +1309,7 @@ UCB Parameters:
             self.get_logger().debug("[OP] Skipping operator: not enough valid candidates in population.")
             return None
 
-        def run_with_timeout(func, args=(), kwargs=None, timeout=1.0):
+        def run_with_timeout(func, args=(), kwargs=None, timeout=2.0):
             kwargs = kwargs or {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
                 fut = ex.submit(func, *args, **kwargs)
@@ -1722,6 +1733,8 @@ UCB Parameters:
             c_new = self.__apply_operator(operator)
             if c_new is None:
                 self.no_improvement_attempt_count += 1
+                if self.iteration_count < 5:
+                    print(f"[RUN-STEP] agent={self.agent_ID} iter={self.iteration_count} apply_op returned None op={operator.name}")
                 return
 
             if self.lock_mode:
