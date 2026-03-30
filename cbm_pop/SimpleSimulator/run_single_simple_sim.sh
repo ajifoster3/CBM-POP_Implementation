@@ -9,6 +9,7 @@ source ../../../../install/local_setup.bash
 # --- restore nounset after sourcing ---
 set -u
 
+
 # ===== Better diagnostics =====
 export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
 export RCUTILS_LOGGING_USE_STDOUT=1
@@ -174,6 +175,24 @@ check_coverage_complete() {
     fi
   done
   $missing_coverage && return 1 || return 0
+}
+
+check_env_coverage_complete() {
+  local run_dir="$1"
+  local env_csv
+  env_csv=$(find "$run_dir" -name "environmental_representation.csv" 2>/dev/null | head -n 1)
+
+  if [[ -z "$env_csv" ]]; then
+    echo "No environmental_representation.csv found in $run_dir"
+    return 1
+  fi
+
+  # The last row has the most recent coverage state; any 'false' means uncovered tasks remain
+  if tail -n 1 "$env_csv" | grep -q 'false'; then
+    echo "Not all tasks covered in $env_csv"
+    return 1
+  fi
+  return 0
 }
 
 unique_id () {
@@ -639,7 +658,7 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
     if ls -d "$PARAM_DIR"/run_* >/dev/null 2>&1; then
       LAST_RUN_DIR=$(ls -d "$PARAM_DIR"/run_* 2>/dev/null | sort -V | tail -n 1)
       LAST_RUN_NUM_LOCAL=$(basename "$LAST_RUN_DIR" | sed 's/run_//')
-      if ! check_coverage_complete "$LAST_RUN_DIR"; then
+      if ! check_coverage_complete "$LAST_RUN_DIR" || ! check_env_coverage_complete "$LAST_RUN_DIR"; then
         echo "[RECOVER] Last run $LAST_RUN_NUM_LOCAL in $PARAM_DIR was incomplete. Deleting and re-running it."
         rm -rf "$LAST_RUN_DIR"
         START_RUN=$LAST_RUN_NUM_LOCAL
@@ -746,7 +765,7 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
 
       cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
 
-      if ! check_coverage_complete "$CONFIG_DIR"; then
+      if ! check_coverage_complete "$CONFIG_DIR" || ! check_env_coverage_complete "$CONFIG_DIR"; then
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
         else
