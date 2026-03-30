@@ -485,6 +485,7 @@ start_all_processes () {
     SIM_PIDS+=("$spid")
     PID_ROLE["$spid"]="simulator[$r]"
     PID_LOG["$spid"]="$SIM_LOG"
+    sleep 0.3   # stagger DDS init to avoid contention
   done
 
   AGENT_PIDS=()
@@ -543,26 +544,43 @@ start_all_processes () {
     PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
   done
 
-  echo "   [STARTUP] Waiting for $NUM_AGENTS agents to initialize (Parallel check)..."
+  # Ready marker for simulators: printed by simple_simulator.py after SimulatorRobot is created
+  local SIM_INIT_MSG="Simulator created"
+
+  echo "   [STARTUP] Waiting for $NUM_AGENTS simulators and $NUM_AGENTS agents to initialize (Parallel check)..."
   echo "   [STARTUP] ROS namespace: /$CUR_NS"
   local start_wait=$(date +%s)
 
-  local -a is_ready
-  for ((i=0; i<NUM_AGENTS; i++)); do is_ready[$i]=0; done
+  local -a sim_ready agent_ready
+  for ((i=0; i<NUM_AGENTS; i++)); do sim_ready[$i]=0; agent_ready[$i]=0; done
 
-  local pending_count=$NUM_AGENTS
+  local pending_count=$(( NUM_AGENTS * 2 ))
 
   while [ "$pending_count" -gt 0 ]; do
     local now=$(date +%s)
 
     if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
-      echo "[ERROR] Startup Timeout! The following agents failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
+      echo "[ERROR] Startup Timeout! Failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
 
-      echo "--- DIAGNOSTICS FOR FAILED AGENTS ---"
+      echo "--- DIAGNOSTICS FOR FAILED PROCESSES ---"
       dmesg | tail -n 20 | grep -i "kill" || echo "No recent kernel kills found in dmesg"
 
       for ((i=0; i<NUM_AGENTS; i++)); do
-        if [ "${is_ready[$i]}" -eq 0 ]; then
+        if [ "${sim_ready[$i]}" -eq 0 ]; then
+             local spid=${SIM_PIDS[$i]}
+             local slogf="${PID_LOG[$spid]}"
+             echo ">>> SIMULATOR $i (PID $spid) LOG DUMP START <<<"
+             if [ -f "$slogf" ]; then
+                 echo "--- HEAD (First 20 lines) ---"
+                 head -n 20 "$slogf"
+                 echo "--- TAIL (Last 50 lines) ---"
+                 tail -n 50 "$slogf"
+             else
+                 echo "Log file not found: $slogf"
+             fi
+             echo ">>> SIMULATOR $i LOG DUMP END <<<"
+        fi
+        if [ "${agent_ready[$i]}" -eq 0 ]; then
              local pid=${AGENT_PIDS[$i]}
              local logf="${PID_LOG[$pid]}"
              echo ">>> AGENT $i (PID $pid) LOG DUMP START <<<"
@@ -581,7 +599,23 @@ start_all_processes () {
     fi
 
     for ((i=0; i<NUM_AGENTS; i++)); do
-      if [ "${is_ready[$i]}" -eq 0 ]; then
+      if [ "${sim_ready[$i]}" -eq 0 ]; then
+        local spid=${SIM_PIDS[$i]}
+        local slogf="${PID_LOG[$spid]}"
+
+        if ! kill -0 "$spid" 2>/dev/null; then
+             echo "[ERROR] Simulator $i (PID $spid) crashed immediately! (Process gone)"
+             if [ -f "$slogf" ]; then tail -n 50 "$slogf"; fi
+             return 1
+        fi
+
+        if [ -f "$slogf" ] && grep -Fq "$SIM_INIT_MSG" "$slogf" 2>/dev/null; then
+             sim_ready[$i]=1
+             pending_count=$((pending_count - 1))
+        fi
+      fi
+
+      if [ "${agent_ready[$i]}" -eq 0 ]; then
         local pid=${AGENT_PIDS[$i]}
         local logf="${PID_LOG[$pid]}"
 
@@ -591,7 +625,7 @@ start_all_processes () {
         fi
 
         if [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
-             is_ready[$i]=1
+             agent_ready[$i]=1
              pending_count=$((pending_count - 1))
         fi
       fi
@@ -599,7 +633,7 @@ start_all_processes () {
     sleep 1
   done
 
-  echo "   [STARTUP] All $NUM_AGENTS agents initialized successfully."
+  echo "   [STARTUP] All $NUM_AGENTS simulators and $NUM_AGENTS agents initialized successfully."
   return 0
 }
 
