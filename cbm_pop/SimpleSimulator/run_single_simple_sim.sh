@@ -460,34 +460,65 @@ start_all_processes () {
       -p problem_size:="$PROBLEM_SIZE")
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
-  SIM_PIDS=()
-  for ((r=0; r<NUM_AGENTS; r++)); do
-    local SIM_LOG="$CONFIG_DIR/simulator_${r}.log"
-    local -a SIM_CMD=(
-      ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE"
-      --robot_id "$r"
-      --num_robots "$NUM_AGENTS"
-      --problem_size "$PROBLEM_SIZE"
-      --problem_class "$CUR_PROBLEM_CLASS"
-      --problem_seed "$CUR_PROBLEM_SEED"
-      --no_gui
-    )
-    if [[ "$CUR_ENABLE_KILL" == "true" ]]; then
-      SIM_CMD+=( --enable_kill --kill_threshold "$CUR_KILL_TH" --num_to_kill "$CUR_NUM_TO_KILL" )
-    fi
-    if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
-      SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
-    fi
-    # Namespace via --ros-args (parsed by rclpy.init via sys.argv)
-    SIM_CMD+=( --ros-args -r __ns:="/$CUR_NS" )
-    local spid
-    spid=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
-    SIM_PIDS+=("$spid")
-    PID_ROLE["$spid"]="simulator[$r]"
-    PID_LOG["$spid"]="$SIM_LOG"
-    sleep 0.3   # stagger DDS init to avoid contention
-  done
+  # Helper: wait for a single process to print a ready marker in its log.
+  # Returns 0 on success, 1 on timeout or crash.
+  _wait_for_ready () {
+    local _pid="$1" _logfile="$2" _marker="$3" _label="$4"
+    local _deadline=$(( $(date +%s) + AGENT_STARTUP_TIMEOUT ))
+    while true; do
+      if ! kill -0 "$_pid" 2>/dev/null; then
+        echo "   [ERROR] $_label (PID $_pid) crashed before becoming ready"
+        [ -f "$_logfile" ] && tail -n 30 "$_logfile"
+        return 1
+      fi
+      if [ -f "$_logfile" ] && grep -Fq "$_marker" "$_logfile" 2>/dev/null; then
+        echo "   [READY] $_label"
+        return 0
+      fi
+      if (( $(date +%s) > _deadline )); then
+        echo "   [TIMEOUT] $_label (PID $_pid) did not become ready within ${AGENT_STARTUP_TIMEOUT}s"
+        echo "   stat:  $(ps -o pid=,stat=,wchan= -p "$_pid" 2>/dev/null || echo 'process gone')"
+        echo "   wchan: $(cat /proc/"$_pid"/wchan 2>/dev/null || echo n/a)"
+        echo "   exe:   $(readlink /proc/"$_pid"/exe 2>/dev/null || echo n/a)"
+        local _child
+        _child=$(ps -o pid=,stat=,wchan= --ppid "$_pid" 2>/dev/null | head -n 3)
+        [ -n "$_child" ] && echo "   child: $_child"
+        [ -f "$_logfile" ] && { echo "   --- last 20 lines ---"; tail -n 20 "$_logfile"; }
+        return 1
+      fi
+      sleep 0.5
+    done
+  }
 
+  # ---- Single simulator (all robots in one process) ----
+  echo "   [STARTUP] Starting simulator (all $NUM_AGENTS robots) | ns=/$CUR_NS"
+  SIM_PIDS=()
+  local SIM_LOG="$CONFIG_DIR/simulator.log"
+  local -a SIM_CMD=(
+    ros2 run "$PACKAGE_NAME" "$SIM_EXECUTABLE"
+    --num_robots "$NUM_AGENTS"
+    --problem_size "$PROBLEM_SIZE"
+    --problem_class "$CUR_PROBLEM_CLASS"
+    --problem_seed "$CUR_PROBLEM_SEED"
+    --no_gui
+  )
+  if [[ "$CUR_ENABLE_KILL" == "true" ]]; then
+    SIM_CMD+=( --enable_kill --kill_threshold "$CUR_KILL_TH" --num_to_kill "$CUR_NUM_TO_KILL" )
+  fi
+  if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
+    SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
+  fi
+  SIM_CMD+=( --ros-args -r __ns:="/$CUR_NS" )
+  local spid
+  spid=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
+  SIM_PIDS+=("$spid")
+  PID_ROLE["$spid"]="simulator"
+  PID_LOG["$spid"]="$SIM_LOG"
+  _wait_for_ready "$spid" "$SIM_LOG" "Simulator created" "simulator" || return 1
+  echo "   [STARTUP] Simulator ready."
+
+  # ---- Sequential agent startup: start each one and wait before continuing ----
+  echo "   [STARTUP] Starting $NUM_AGENTS agents sequentially..."
   AGENT_PIDS=()
   for ((i=0; i<NUM_AGENTS; i++)); do
     local AGENT_LOG="$CONFIG_DIR/agent_${i}.log"
@@ -541,124 +572,11 @@ start_all_processes () {
     local pid
     pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
     AGENT_PIDS+=("$pid")
-    PID_ROLE["$pid"]="agent[$i]"; PID_LOG["$pid"]="$AGENT_LOG"
-    sleep 0.3   # stagger DDS init to avoid contention
+    PID_ROLE["$pid"]="agent[$i]"
+    PID_LOG["$pid"]="$AGENT_LOG"
+    _wait_for_ready "$pid" "$AGENT_LOG" "$AGENT_INIT_MSG" "agent[$i]" || return 1
   done
-
-  # Ready marker for simulators: printed by simple_simulator.py after SimulatorRobot is created
-  local SIM_INIT_MSG="Simulator created"
-
-  echo "   [STARTUP] Waiting for $NUM_AGENTS simulators and $NUM_AGENTS agents to initialize (Parallel check)..."
-  echo "   [STARTUP] ROS namespace: /$CUR_NS"
-  local start_wait=$(date +%s)
-
-  local -a sim_ready agent_ready
-  for ((i=0; i<NUM_AGENTS; i++)); do sim_ready[$i]=0; agent_ready[$i]=0; done
-
-  local pending_count=$(( NUM_AGENTS * 2 ))
-
-  while [ "$pending_count" -gt 0 ]; do
-    local now=$(date +%s)
-
-    if (( now - start_wait > AGENT_STARTUP_TIMEOUT )); then
-      echo "[ERROR] Startup Timeout! Failed to init within ${AGENT_STARTUP_TIMEOUT}s:"
-
-      echo "--- DIAGNOSTICS FOR FAILED PROCESSES ---"
-      dmesg | tail -n 20 | grep -i "kill" || echo "No recent kernel kills found in dmesg"
-
-      # Helper: print /proc info for a stalled pid
-      _dump_proc_state () {
-        local _pid="$1" _label="$2"
-        echo "  [PROC] $_label PID=$_pid"
-        # Process state (D=uninterruptible I/O wait, S=sleeping, R=running, Z=zombie)
-        echo "  stat:  $(ps -o pid=,stat=,wchan= -p "$_pid" 2>/dev/null || echo 'process gone')"
-        # Kernel function the process is blocked in
-        echo "  wchan: $(cat /proc/"$_pid"/wchan 2>/dev/null || echo 'n/a')"
-        # Which executable/script is actually running (reveals if ros2 run stalled before exec)
-        echo "  exe:   $(readlink /proc/"$_pid"/exe 2>/dev/null || echo 'n/a')"
-        echo "  cmd:   $(tr '\0' ' ' </proc/"$_pid"/cmdline 2>/dev/null || echo 'n/a')"
-        # Open file descriptors — reveals if it is stuck on a filesystem path
-        echo "  fds:"; ls -la /proc/"$_pid"/fd 2>/dev/null | tail -n 15 || echo "  (cannot read fds)"
-        # Any child processes (ros2 run may have spawned the Python node as a child)
-        local _children
-        _children=$(ps -o pid=,stat=,wchan=,cmd= --ppid "$_pid" 2>/dev/null)
-        if [ -n "$_children" ]; then
-          echo "  children:"
-          echo "$_children" | sed 's/^/    /'
-        fi
-      }
-
-      for ((i=0; i<NUM_AGENTS; i++)); do
-        if [ "${sim_ready[$i]}" -eq 0 ]; then
-             local spid=${SIM_PIDS[$i]}
-             local slogf="${PID_LOG[$spid]}"
-             echo ">>> SIMULATOR $i (PID $spid) LOG DUMP START <<<"
-             _dump_proc_state "$spid" "simulator[$i]"
-             if [ -f "$slogf" ]; then
-                 echo "--- HEAD (First 20 lines) ---"
-                 head -n 20 "$slogf"
-                 echo "--- TAIL (Last 50 lines) ---"
-                 tail -n 50 "$slogf"
-             else
-                 echo "Log file not found: $slogf"
-             fi
-             echo ">>> SIMULATOR $i LOG DUMP END <<<"
-        fi
-        if [ "${agent_ready[$i]}" -eq 0 ]; then
-             local pid=${AGENT_PIDS[$i]}
-             local logf="${PID_LOG[$pid]}"
-             echo ">>> AGENT $i (PID $pid) LOG DUMP START <<<"
-             _dump_proc_state "$pid" "agent[$i]"
-             if [ -f "$logf" ]; then
-                 echo "--- HEAD (First 20 lines) ---"
-                 head -n 20 "$logf"
-                 echo "--- TAIL (Last 50 lines) ---"
-                 tail -n 50 "$logf"
-             else
-                 echo "Log file not found: $logf"
-             fi
-             echo ">>> AGENT $i LOG DUMP END <<<"
-        fi
-      done
-      return 1
-    fi
-
-    for ((i=0; i<NUM_AGENTS; i++)); do
-      if [ "${sim_ready[$i]}" -eq 0 ]; then
-        local spid=${SIM_PIDS[$i]}
-        local slogf="${PID_LOG[$spid]}"
-
-        if ! kill -0 "$spid" 2>/dev/null; then
-             echo "[ERROR] Simulator $i (PID $spid) crashed immediately! (Process gone)"
-             if [ -f "$slogf" ]; then tail -n 50 "$slogf"; fi
-             return 1
-        fi
-
-        if [ -f "$slogf" ] && grep -Fq "$SIM_INIT_MSG" "$slogf" 2>/dev/null; then
-             sim_ready[$i]=1
-             pending_count=$((pending_count - 1))
-        fi
-      fi
-
-      if [ "${agent_ready[$i]}" -eq 0 ]; then
-        local pid=${AGENT_PIDS[$i]}
-        local logf="${PID_LOG[$pid]}"
-
-        if ! kill -0 "$pid" 2>/dev/null; then
-             echo "[ERROR] Agent $i (PID $pid) crashed immediately! (Process gone)"
-             return 1
-        fi
-
-        if [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
-             agent_ready[$i]=1
-             pending_count=$((pending_count - 1))
-        fi
-      fi
-    done
-    sleep 1
-  done
-
-  echo "   [STARTUP] All $NUM_AGENTS simulators and $NUM_AGENTS agents initialized successfully."
+  echo "   [STARTUP] All $NUM_AGENTS agents ready."
   return 0
 }
 
