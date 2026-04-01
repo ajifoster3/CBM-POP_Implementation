@@ -202,9 +202,11 @@ check_env_coverage_complete() {
     return 1
   fi
 
-  # The last row has the most recent coverage state; any 0 in the JSON array means uncovered tasks remain
-  # (logger stores coverage as a JSON array of 0/1 integers, e.g. "[1,0,1,...]")
-  if tail -n 1 "$env_csv" | grep -qE '\b0\b'; then
+  # The last row has the most recent coverage state; any 0 in the JSON array means uncovered tasks remain.
+  # Row format: <timestamp>,<agent_id>,"[1,0,1,...]"
+  # We must check ONLY the JSON array column (3rd field, quoted), not the whole row —
+  # otherwise the agent_id column (e.g. "0" for agent 0) causes a false "not covered" result.
+  if tail -n 1 "$env_csv" | awk -F'"' '{print $2}' | grep -qE '\b0\b'; then
     echo "Not all tasks covered in $env_csv"
     return 1
   fi
