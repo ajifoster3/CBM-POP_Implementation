@@ -743,7 +743,14 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
       LAST_RUN_NUM_LOCAL=$(basename "$LAST_RUN_DIR" | sed 's/run_//')
       if ! check_coverage_complete "$LAST_RUN_DIR" || ! check_env_coverage_complete "$LAST_RUN_DIR"; then
         echo "[RECOVER] Last run $LAST_RUN_NUM_LOCAL in $PARAM_DIR was incomplete. Deleting and re-running it."
-        rm -rf "$LAST_RUN_DIR"
+        # On HPC Lustre/NFS, rm -rf can hang waiting for distributed locks left by a
+        # killed job.  Cap at 60 s; if it times out, rename instead so the directory
+        # is out of the way and the new run can use the same name.
+        if ! timeout 60 rm -rf "$LAST_RUN_DIR"; then
+          _stale="${LAST_RUN_DIR}.incomplete.$(date +%s)"
+          echo "[WARN] rm -rf timed out or failed — renaming to $(basename "$_stale") and continuing"
+          mv "$LAST_RUN_DIR" "$_stale" 2>/dev/null || true
+        fi
         START_RUN=$LAST_RUN_NUM_LOCAL
       else
         START_RUN=$((LAST_RUN_NUM_LOCAL + 1))
@@ -804,7 +811,7 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
 
         echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
         cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
-        rm -rf "$CONFIG_DIR"
+        timeout 60 rm -rf "$CONFIG_DIR" || { mv "$CONFIG_DIR" "${CONFIG_DIR}.failed.$(date +%s)" 2>/dev/null || true; }
 
         if [[ "$LAST_RUN_NUM" == "$run" ]]; then
           SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
@@ -822,10 +829,18 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
       START_TIME=$(date +%s)
       RUN_TIMEOUT=0
       FIRST_DEAD_PID=""
+      _LAST_HEARTBEAT=0
       while true; do
         sleep 2
         CURRENT_TIME=$(date +%s)
         ELAPSED=$((CURRENT_TIME - START_TIME))
+
+        # Print a heartbeat every 30 s so the SLURM output file keeps growing
+        # and we can confirm the job is alive during long silent simulation runs.
+        if (( ELAPSED - _LAST_HEARTBEAT >= 30 )); then
+          echo "[HEARTBEAT] run=$run elapsed=${ELAPSED}s"
+          _LAST_HEARTBEAT=$ELAPSED
+        fi
 
         if ! check_first_dead; then
           role="${PID_ROLE[$FIRST_DEAD_PID]}"
@@ -868,7 +883,11 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
           exit 1
         fi
         echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
-        rm -rf "$CONFIG_DIR"
+        if ! timeout 60 rm -rf "$CONFIG_DIR"; then
+          _stale="${CONFIG_DIR}.failed.$(date +%s)"
+          echo "[WARN] rm -rf timed out — renaming to $(basename "$_stale")"
+          mv "$CONFIG_DIR" "$_stale" 2>/dev/null || true
+        fi
         echo "[RETRY] Repeating run $run (kill_th=$KILL_TH, revive_th=$REVIVE_TH)"
         continue
       fi
