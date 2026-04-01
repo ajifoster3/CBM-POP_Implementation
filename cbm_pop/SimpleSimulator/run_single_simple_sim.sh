@@ -531,6 +531,15 @@ start_all_processes () {
   _wait_for_ready "$spid" "$SIM_LOG" "Simulator created" "simulator" || return 1
   echo "   [STARTUP] Simulator ready."
 
+  # Start the start-go publisher NOW (before agents launch) so it has the full agent
+  # startup window (~15-20s) to complete DDS discovery with every agent subscriber.
+  # If started after all agents are ready, only the earliest-launched agents (lowest
+  # participant IDs) are discovered within the 30s confirmation window.
+  _start_go_pub_pid=""
+  ros2 topic pub --rate 5 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: false" \
+    > /dev/null 2>&1 &
+  _start_go_pub_pid=$!
+
   # ---- Parallel agent startup: launch all agents at once so all robots begin together ----
   # Agents are launched simultaneously after the simulator is confirmed ready.
   # The simulator (all-in-one) already publishes all robot poses, so whichever agent
@@ -640,14 +649,18 @@ start_all_processes () {
 
   echo "   [STARTUP] All $NUM_AGENTS agents ready — sending start-go signal..."
 
-  # Publish the start-go signal in background, repeatedly, so every agent
-  # receives it even under DDS discovery delays.
-  ros2 topic pub --rate 2 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: true" \
+  # Switch the pre-warmed publisher to send data:true now that all agents are ready.
+  # Kill the data:false warm-up publisher and replace with data:true.
+  kill "$_start_go_pub_pid" 2>/dev/null || true
+  wait "$_start_go_pub_pid" 2>/dev/null || true
+  ros2 topic pub --rate 5 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: true" \
     > /dev/null 2>&1 &
-  local _start_go_pub_pid=$!
+  _start_go_pub_pid=$!
 
-  # Wait for all agents to confirm they received the start-go signal
-  local _sg_deadline=$(( $(date +%s) + 30 ))
+  # Wait for all agents to confirm they received the start-go signal.
+  # Use a generous timeout — DDS discovery for a pre-warmed publisher should be fast,
+  # but allow extra time on loaded HPC nodes.
+  local _sg_deadline=$(( $(date +%s) + 60 ))
   local -a _sg_ready
   for ((i=0; i<NUM_AGENTS; i++)); do _sg_ready[$i]=0; done
   local _sg_pending=$NUM_AGENTS

@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!-- FastDDS profile: UDP unicast only, no shared memory.
-     - Eliminates stale /dev/shm segments from killed processes blocking rclpy.init().
-     - Restricts meta-traffic to localhost unicast so nodes on the same machine
-       find each other without flooding the subnet with multicast announcements.
-       (Cross-subnet multicast suppression is handled by ROS_LOCALHOST_ONLY=1 in the
-       launch script, which is more portable than empty locator lists that older
-       FastDDS XML parsers reject.) -->
+<!-- FastDDS profile: UDP only, no shared memory.
+     Prevents stale /dev/shm segments from killed processes blocking rclpy.init()
+     on the next run.  Multicast discovery is left enabled because it is the most
+     efficient mechanism when many participants start simultaneously on the same
+     machine — each sends one multicast announcement and all others receive it.
+     Cross-host and cross-job isolation is handled at a higher level:
+       ROS_LOCALHOST_ONLY=1   — keeps multicast on the loopback interface only
+       ROS_DOMAIN_ID          — isolates concurrent SLURM jobs from each other -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <transport_descriptors>
     <transport_descriptor>
@@ -19,22 +20,6 @@
         <transport_id>udp_only</transport_id>
       </userTransports>
       <useBuiltinTransports>false</useBuiltinTransports>
-      <builtin>
-        <metatrafficUnicastLocatorList>
-          <locator>
-            <udpv4>
-              <address>127.0.0.1</address>
-            </udpv4>
-          </locator>
-        </metatrafficUnicastLocatorList>
-        <initialPeersList>
-          <locator>
-            <udpv4>
-              <address>127.0.0.1</address>
-            </udpv4>
-          </locator>
-        </initialPeersList>
-      </builtin>
     </rtps>
   </participant>
 </profiles>
