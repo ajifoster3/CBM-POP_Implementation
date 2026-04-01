@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!-- FastDDS profile: UDP unicast only, no shared memory, no multicast.
+<!-- FastDDS profile: UDP unicast only, no shared memory.
      - Eliminates stale /dev/shm segments from killed processes blocking rclpy.init().
-     - Disables multicast discovery to prevent DDS thundering-herd on HPC nodes where
-       many participants start simultaneously and flood the subnet with announcements.
-     - All discovery uses localhost unicast; works for single-node (same machine) runs. -->
+     - Restricts meta-traffic to localhost unicast so nodes on the same machine
+       find each other without flooding the subnet with multicast announcements.
+       (Cross-subnet multicast suppression is handled by ROS_LOCALHOST_ONLY=1 in the
+       launch script, which is more portable than empty locator lists that older
+       FastDDS XML parsers reject.) -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <transport_descriptors>
     <transport_descriptor>
@@ -18,8 +20,6 @@
       </userTransports>
       <useBuiltinTransports>false</useBuiltinTransports>
       <builtin>
-        <!-- No multicast: announce and discover via unicast on localhost only -->
-        <metatrafficMulticastLocatorList/>
         <metatrafficUnicastLocatorList>
           <locator>
             <udpv4>

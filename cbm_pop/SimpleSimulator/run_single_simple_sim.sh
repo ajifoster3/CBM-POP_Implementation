@@ -25,6 +25,8 @@ ulimit -n 65536 || ulimit -n 16384 || true   # raise FD limit; each ROS2 node us
 # where many participants start simultaneously and flood the subnet.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/fastdds_no_shm.xml"
+# Suppress cross-host multicast; all DDS traffic stays on localhost.
+export ROS_LOCALHOST_ONLY=1
 # Unique domain ID per SLURM job (or per PID if not in SLURM) to isolate concurrent jobs.
 # ROS_DOMAIN_ID must be 0-101.
 export ROS_DOMAIN_ID=$(( (${SLURM_JOB_ID:-$$} % 100) + 1 ))
