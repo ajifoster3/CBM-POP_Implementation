@@ -18,6 +18,7 @@ export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
+ulimit -n 65536 || ulimit -n 16384 || true   # raise FD limit; each ROS2 node uses ~20-30 FDs
 
 gen_seed() {
   if command -v od >/dev/null 2>&1; then
@@ -187,8 +188,9 @@ check_env_coverage_complete() {
     return 1
   fi
 
-  # The last row has the most recent coverage state; any 'false' means uncovered tasks remain
-  if tail -n 1 "$env_csv" | grep -q 'false'; then
+  # The last row has the most recent coverage state; any 0 in the JSON array means uncovered tasks remain
+  # (logger stores coverage as a JSON array of 0/1 integers, e.g. "[1,0,1,...]")
+  if tail -n 1 "$env_csv" | grep -qE '\b0\b'; then
     echo "Not all tasks covered in $env_csv"
     return 1
   fi

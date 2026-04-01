@@ -374,6 +374,8 @@ UCB Parameters:
 
         self.create_timer(5, self.check_stale_agents)
 
+        print("[STARTUP-COMPLETE]")
+
     # ---------------------------
     # Task locking helpers
     # ---------------------------
@@ -1946,6 +1948,7 @@ def main(args=None):
         ucb_window=ucb_window,
     )
     print("CBMPopulationAgentOnlineSimpleSimulation has been initialized.")
+    print("[STARTUP-COMPLETE] Ready to spin.")
 
     shutdown_reason = {"value": None}
 

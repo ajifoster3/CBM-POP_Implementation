@@ -48,7 +48,7 @@ class SimpleFitnessLogger(Node):
         # Timeouts
         self.timeout = 10
         self.last_env_update_time = None
-        self.termination_timeout = 20.0
+        self.termination_timeout = 60.0
 
         self.declare_parameter('timeout', 0.0)
         self.timeout = self.get_parameter('timeout').get_parameter_value().double_value
@@ -124,6 +124,8 @@ class SimpleFitnessLogger(Node):
 
         # ---- ALL TOPICS ARE RELATIVE for namespace isolation ----
         cb_group = ReentrantCallbackGroup()
+        # Separate group for env-rep and timeout so slow solution callbacks can't starve them
+        vital_cb_group = ReentrantCallbackGroup()
         self.global_pose_subscribers = []
         for agent_id in range(self.num_tsp_agents):
             topic = f'central_control/uas_{agent_id}/global_pose'
@@ -151,7 +153,8 @@ class SimpleFitnessLogger(Node):
             CurrentTask, 'current_task', self.current_task_update_callback, 10
         )
         self.environmental_subscriber = self.create_subscription(
-            EnvironmentalRepresentation, 'environmental_representation', self.environmental_representation_callback, 10
+            EnvironmentalRepresentation, 'environmental_representation', self.environmental_representation_callback, 40,
+            callback_group=vital_cb_group,
         )
 
         self.environmental_representation_state = [False] * (self.problem_size * self.problem_size)
@@ -160,9 +163,9 @@ class SimpleFitnessLogger(Node):
             Bool, 'stop_plotting', self.stop_callback, 10
         )
 
-        # Timers
-        self.create_timer(1.0, self.check_timeout)
-        self.create_timer(5.0, self.debug_heartbeat)
+        # Timers — timeout/heartbeat in vital_cb_group so solution callbacks can't block them
+        self.create_timer(1.0, self.check_timeout, callback_group=vital_cb_group)
+        self.create_timer(5.0, self.debug_heartbeat, callback_group=vital_cb_group)
 
         self.debug(f"Logger started. Output dir: {self.run_folder}")
 
@@ -281,8 +284,7 @@ class SimpleFitnessLogger(Node):
         if elapsed > self.termination_timeout:
             self.get_logger().warn(
                 f"No EnvironmentalRepresentation received for {elapsed:.2f}s. Shutting down...")
-            self.destroy_node()
-            rclpy.shutdown()
+            raise SystemExit(0)
 
     def finished_coverage_callback(self, msg: FinishedCoverage):
         self.finished_robots[int(msg.robot_id)] = bool(msg.finished)
@@ -484,7 +486,7 @@ def main(args=None):
 
     try:
         executor.spin()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         fitness_logger.destroy_node()
