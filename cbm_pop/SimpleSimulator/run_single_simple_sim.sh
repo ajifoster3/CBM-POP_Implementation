@@ -19,6 +19,7 @@ export PYTHONFAULTHANDLER=1
 export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
 ulimit -n 65536 || ulimit -n 16384 || true   # raise FD limit; each ROS2 node uses ~20-30 FDs
+echo "[INFO] FD limit: $(ulimit -n)"
 
 # ===== DDS isolation =====
 # Use unicast-only FastDDS config to prevent multicast discovery storms on HPC nodes
@@ -536,15 +537,6 @@ start_all_processes () {
   _wait_for_ready "$spid" "$SIM_LOG" "Simulator created" "simulator" || return 1
   echo "   [STARTUP] Simulator ready."
 
-  # Start the start-go publisher NOW (before agents launch) so it has the full agent
-  # startup window (~15-20s) to complete DDS discovery with every agent subscriber.
-  # If started after all agents are ready, only the earliest-launched agents (lowest
-  # participant IDs) are discovered within the 30s confirmation window.
-  _start_go_pub_pid=""
-  ros2 topic pub --rate 5 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: false" \
-    > /dev/null 2>&1 &
-  _start_go_pub_pid=$!
-
   # ---- Parallel agent startup: launch all agents at once so all robots begin together ----
   # Agents are launched simultaneously after the simulator is confirmed ready.
   # The simulator (all-in-one) already publishes all robot poses, so whichever agent
@@ -654,13 +646,11 @@ start_all_processes () {
 
   echo "   [STARTUP] All $NUM_AGENTS agents ready — sending start-go signal..."
 
-  # Switch the pre-warmed publisher to send data:true now that all agents are ready.
-  # Kill the data:false warm-up publisher and replace with data:true.
-  kill "$_start_go_pub_pid" 2>/dev/null || true
-  wait "$_start_go_pub_pid" 2>/dev/null || true
+  local _start_go_pub_pid=""
   ros2 topic pub --rate 5 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: true" \
     > /dev/null 2>&1 &
   _start_go_pub_pid=$!
+  SIM_PIDS+=("$_start_go_pub_pid")   # tracked so cleanup_run kills it at end of run
 
   # Wait for all agents to confirm they received the start-go signal.
   # Use a generous timeout — DDS discovery for a pre-warmed publisher should be fast,
@@ -687,8 +677,9 @@ start_all_processes () {
     sleep 0.2
   done
 
-  kill "$_start_go_pub_pid" 2>/dev/null || true
-  wait "$_start_go_pub_pid" 2>/dev/null || true
+  # Keep the publisher running for the duration of the run so any agent that
+  # subscribes late (e.g. after a DDS reconnect) still receives start-go.
+  # It will be killed by cleanup_run at the end of the run.
   echo "   [STARTUP] All agents moving. Run underway."
   return 0
 }
