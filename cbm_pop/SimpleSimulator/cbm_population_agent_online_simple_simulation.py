@@ -260,6 +260,7 @@ UCB Parameters:
         self.agent_timeouts = [False] * self.num_tsp_agents
         self.finished_robots = [False] * self.num_tsp_agents
         self.is_all_poses = False
+        self.start_go = False
 
         self.cb_group = ReentrantCallbackGroup()
         self.me_cb_group = MutuallyExclusiveCallbackGroup()
@@ -323,6 +324,12 @@ UCB Parameters:
         )
         self.finished_coverage_sub = self.create_subscription(
             FinishedCoverage, "central_control/finished_coverage", self.__finished_coverage_callback, 10
+        )
+
+        # Start-go signal: no robot moves until this is received from the launcher
+        self.start_go_sub = self.create_subscription(
+            Bool, "central_control/start_go", self.__start_go_callback, 10,
+            callback_group=self.cb_group
         )
 
         # Timers
@@ -1171,14 +1178,26 @@ UCB Parameters:
         rep.is_covered = list(self.is_covered)
         self.environmental_representation_publisher.publish(rep)
 
+    def __start_go_callback(self, msg: Bool):
+        if msg.data and not self.start_go:
+            print(f"[START-GO] agent={self.agent_ID} received start signal — beginning movement")
+            self.start_go = True
+
     def __publish_goal_pose(self):
-        if self.current_task is not None and self.problem.task_poses:
+        if not self.start_go:
+            return
+
+        is_all_covered = all(self.is_covered)
+
+        if self.current_task is not None and not is_all_covered and self.problem.task_poses:
+            # Active task exists and not all tasks are covered, so go to the current task.
             goal_pose = SimplePosition()
             goal_pose.robot_id = self.agent_ID
             goal_pose.x_position = float(self.problem.task_poses[self.current_task][0])
             goal_pose.y_position = float(self.problem.task_poses[self.current_task][1])
             self.goal_pose_publisher.publish(goal_pose)
         else:
+            # No active task, or all tasks are covered. Return to depot.
             try:
                 if self.am_i_failed:
                     goal_pose = SimplePosition()

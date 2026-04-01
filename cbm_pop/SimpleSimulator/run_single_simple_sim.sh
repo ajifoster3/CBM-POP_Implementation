@@ -517,8 +517,13 @@ start_all_processes () {
   _wait_for_ready "$spid" "$SIM_LOG" "Simulator created" "simulator" || return 1
   echo "   [STARTUP] Simulator ready."
 
-  # ---- Sequential agent startup: start each one and wait before continuing ----
-  echo "   [STARTUP] Starting $NUM_AGENTS agents sequentially..."
+  # ---- Parallel agent startup: launch all agents at once so all robots begin together ----
+  # Agents are launched simultaneously after the simulator is confirmed ready.
+  # The simulator (all-in-one) already publishes all robot poses, so whichever agent
+  # starts first would begin moving its robot immediately — sequential startup would
+  # cause robots to start in ID order. Parallel launch ensures all agents receive
+  # poses and start their run loops at the same time.
+  echo "   [STARTUP] Launching all $NUM_AGENTS agents in parallel..."
   AGENT_PIDS=()
   for ((i=0; i<NUM_AGENTS; i++)); do
     local AGENT_LOG="$CONFIG_DIR/agent_${i}.log"
@@ -574,9 +579,85 @@ start_all_processes () {
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"
     PID_LOG["$pid"]="$AGENT_LOG"
-    _wait_for_ready "$pid" "$AGENT_LOG" "$AGENT_INIT_MSG" "agent[$i]" || return 1
+    sleep 0.2
   done
-  echo "   [STARTUP] All $NUM_AGENTS agents ready."
+
+  # Wait for all agents to confirm ready in parallel
+  echo "   [STARTUP] Waiting for all $NUM_AGENTS agents to initialize..."
+  local start_wait
+  start_wait=$(date +%s)
+  local -a agent_ready
+  for ((i=0; i<NUM_AGENTS; i++)); do agent_ready[$i]=0; done
+  local pending=$NUM_AGENTS
+
+  while (( pending > 0 )); do
+    if (( $(date +%s) - start_wait > AGENT_STARTUP_TIMEOUT )); then
+      echo "   [ERROR] Timeout waiting for agents after ${AGENT_STARTUP_TIMEOUT}s"
+      for ((i=0; i<NUM_AGENTS; i++)); do
+        if (( agent_ready[i] == 0 )); then
+          local pid=${AGENT_PIDS[$i]}
+          echo "   [TIMEOUT] agent[$i] (PID $pid)"
+          echo "   stat:  $(ps -o pid=,stat=,wchan= -p "$pid" 2>/dev/null || echo 'gone')"
+          echo "   wchan: $(cat /proc/"$pid"/wchan 2>/dev/null || echo n/a)"
+          local logf="${PID_LOG[$pid]}"
+          [ -f "$logf" ] && { echo "   --- last 20 lines ---"; tail -n 20 "$logf"; }
+        fi
+      done
+      return 1
+    fi
+    for ((i=0; i<NUM_AGENTS; i++)); do
+      if (( agent_ready[i] == 0 )); then
+        local pid=${AGENT_PIDS[$i]}
+        if ! kill -0 "$pid" 2>/dev/null; then
+          echo "   [ERROR] agent[$i] (PID $pid) crashed during startup"
+          tail -n 30 "${PID_LOG[$pid]}" 2>/dev/null
+          return 1
+        fi
+        local logf="${PID_LOG[$pid]}"
+        if [ -f "$logf" ] && grep -Fq "$AGENT_INIT_MSG" "$logf" 2>/dev/null; then
+          agent_ready[$i]=1
+          pending=$(( pending - 1 ))
+          echo "   [READY] agent[$i]"
+        fi
+      fi
+    done
+    sleep 0.5
+  done
+
+  echo "   [STARTUP] All $NUM_AGENTS agents ready — sending start-go signal..."
+
+  # Publish the start-go signal in background, repeatedly, so every agent
+  # receives it even under DDS discovery delays.
+  ros2 topic pub --rate 2 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: true" \
+    > /dev/null 2>&1 &
+  local _start_go_pub_pid=$!
+
+  # Wait for all agents to confirm they received the start-go signal
+  local _sg_deadline=$(( $(date +%s) + 30 ))
+  local -a _sg_ready
+  for ((i=0; i<NUM_AGENTS; i++)); do _sg_ready[$i]=0; done
+  local _sg_pending=$NUM_AGENTS
+  while (( _sg_pending > 0 )); do
+    if (( $(date +%s) > _sg_deadline )); then
+      echo "   [WARN] Timeout waiting for start-go confirmation from $_sg_pending agents — proceeding anyway"
+      break
+    fi
+    for ((i=0; i<NUM_AGENTS; i++)); do
+      if (( _sg_ready[i] == 0 )); then
+        local _sg_logf="${PID_LOG[${AGENT_PIDS[$i]}]}"
+        if [ -f "$_sg_logf" ] && grep -Fq "[START-GO]" "$_sg_logf" 2>/dev/null; then
+          _sg_ready[$i]=1
+          _sg_pending=$(( _sg_pending - 1 ))
+          echo "   [START-GO] agent[$i] confirmed"
+        fi
+      fi
+    done
+    sleep 0.2
+  done
+
+  kill "$_start_go_pub_pid" 2>/dev/null || true
+  wait "$_start_go_pub_pid" 2>/dev/null || true
+  echo "   [STARTUP] All agents moving. Run underway."
   return 0
 }
 
