@@ -27,10 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/fastdds_no_shm.xml"
 # Suppress cross-host multicast; all DDS traffic stays on localhost.
 export ROS_LOCALHOST_ONLY=1
-# Unique domain ID per SLURM job (or per PID if not in SLURM) to isolate concurrent jobs.
-# ROS_DOMAIN_ID must be 0-101.
-export ROS_DOMAIN_ID=$(( (${SLURM_JOB_ID:-$$} % 100) + 1 ))
-echo "[INFO] ROS_DOMAIN_ID=${ROS_DOMAIN_ID}  FastDDS profile=${FASTRTPS_DEFAULT_PROFILES_FILE}"
+# Base domain offset per SLURM job to isolate concurrent jobs from each other.
+# ROS_DOMAIN_ID must be 0-101; we rotate per-run within a 50-slot window per job.
+JOB_DOMAIN_BASE=$(( (${SLURM_JOB_ID:-$$} % 50) * 2 ))
+export ROS_DOMAIN_ID=$JOB_DOMAIN_BASE   # updated per-run in the main loop
+echo "[INFO] JOB_DOMAIN_BASE=${JOB_DOMAIN_BASE}  FastDDS profile=${FASTRTPS_DEFAULT_PROFILES_FILE}"
 
 gen_seed() {
   if command -v od >/dev/null 2>&1; then
@@ -238,6 +239,10 @@ cleanup_run () {
   kill_pid_tree "$logger_pid"
   for sp in "${sim_pids[@]}"; do kill_pid_tree "$sp"; done
   for p  in "${agent_pids[@]}"; do kill_pid_tree "$p";  done
+
+  # Give the OS a moment to release UDP sockets and DDS resources before
+  # the next run starts on a different domain ID.
+  sleep 2
 }
 
 
@@ -763,6 +768,13 @@ for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
     while [ "$run" -le "$NUM_RUNS" ]; do
 
       RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
+
+      # Rotate ROS_DOMAIN_ID each run to avoid stale FastDDS SHM mutexes from
+      # previous runs' killed processes.  Alternating between two adjacent domain
+      # IDs gives the previous domain's processes time to fully release their
+      # resources before we return to it.  Each job uses a 2-slot window so
+      # concurrent jobs with different JOB_DOMAIN_BASE values don't collide.
+      export ROS_DOMAIN_ID=$(( JOB_DOMAIN_BASE + (run % 2) ))
 
       # ---- Generate a unique ROS2 namespace for this run ----
       # Combines run number, nanosecond timestamp, PID, and RANDOM to
