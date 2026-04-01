@@ -20,6 +20,16 @@ export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
 ulimit -n 65536 || ulimit -n 16384 || true   # raise FD limit; each ROS2 node uses ~20-30 FDs
 
+# ===== DDS isolation =====
+# Use unicast-only FastDDS config to prevent multicast discovery storms on HPC nodes
+# where many participants start simultaneously and flood the subnet.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/fastdds_no_shm.xml"
+# Unique domain ID per SLURM job (or per PID if not in SLURM) to isolate concurrent jobs.
+# ROS_DOMAIN_ID must be 0-101.
+export ROS_DOMAIN_ID=$(( (${SLURM_JOB_ID:-$$} % 100) + 1 ))
+echo "[INFO] ROS_DOMAIN_ID=${ROS_DOMAIN_ID}  FastDDS profile=${FASTRTPS_DEFAULT_PROFILES_FILE}"
+
 gen_seed() {
   if command -v od >/dev/null 2>&1; then
     printf '%d\n' $(( 10000 + ( $(od -An -N2 -tu2 /dev/urandom | tr -d ' ') % 90000 ) ))
