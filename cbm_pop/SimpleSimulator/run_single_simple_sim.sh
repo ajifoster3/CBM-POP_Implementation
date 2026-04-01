@@ -37,11 +37,11 @@ LOGGER_EXECUTABLE="simple_fitness_logger"
 AGENT_EXECUTABLE="cbm_population_agent_online_simple_simulation"
 SIM_EXECUTABLE="simple_simulator"
 
-AGENT_INIT_MSG="["
-AGENT_STARTUP_TIMEOUT=60
+AGENT_INIT_MSG="[STARTUP-COMPLETE]"
+AGENT_STARTUP_TIMEOUT=180
 
 RUNTIME=-1.0
-TIMEOUT_SECONDS=300
+TIMEOUT_SECONDS=500
 
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
@@ -579,7 +579,7 @@ start_all_processes () {
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"
     PID_LOG["$pid"]="$AGENT_LOG"
-    sleep 0.2
+    sleep 0.5
   done
 
   # Wait for all agents to confirm ready in parallel
