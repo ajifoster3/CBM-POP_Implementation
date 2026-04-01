@@ -293,8 +293,7 @@ class SimpleFitnessLogger(Node):
 
     def __shutdown_ros2(self):
         print("Shutting down ROS2 system now.")
-        self.destroy_node()
-        rclpy.shutdown()
+        raise SystemExit(0)
 
     def cumulative_reward_callback(self, msg: CumulativeReward):
         with open(self.cumulative_log_file, mode='a', newline='') as file:
@@ -473,9 +472,7 @@ class SimpleFitnessLogger(Node):
     def stop_callback(self, msg: Bool):
         if msg.data:
             self.debug("Stop signal received. Terminating node.")
-            self.destroy_node()
-            if rclpy.ok():
-                rclpy.shutdown()
+            raise SystemExit(0)
 
 
 def main(args=None):
