@@ -256,27 +256,27 @@ start_logged () {
   shift 2
   mkdir -p "$(dirname "$logfile")" "$roslogdir"
   (
-    echo "[WRAPPER] Starting '$1' on $(hostname) at $(date -Is)" >> "$logfile"
+    echo "[WRAPPER] Starting '$1' on $(hostname) at $(date -Is)"
     if command -v stdbuf >/dev/null 2>&1; then
       RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
       ROS_LOG_DIR="$roslogdir" \
       PYTHONUNBUFFERED=1 \
       PYTHONFAULTHANDLER=1 \
       PYTHONASYNCIODEBUG=1 \
-      stdbuf -oL -eL "$@" >> "$logfile" 2>&1
+      stdbuf -oL -eL "$@"
     else
-      echo "[WRAPPER] stdbuf not found on $(hostname) — running without line buffering" >> "$logfile"
+      echo "[WRAPPER] stdbuf not found on $(hostname) — running without line buffering"
       RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
       ROS_LOG_DIR="$roslogdir" \
       PYTHONUNBUFFERED=1 \
       PYTHONFAULTHANDLER=1 \
       PYTHONASYNCIODEBUG=1 \
-      "$@" >> "$logfile" 2>&1
+      "$@"
     fi
     ec=$?
-    echo "[WRAPPER] '$1' exited with code $ec on $(hostname) at $(date -Is)" >> "$logfile"
+    echo "[WRAPPER] '$1' exited with code $ec on $(hostname) at $(date -Is)"
     exit $ec
-  ) &
+  ) >> "$logfile" 2>&1 &
   echo $!
 }
 
