@@ -250,6 +250,8 @@ cleanup_run () {
 
 
 
+_START_LOGGED_PID=""
+
 start_logged () {
   local logfile="$1"
   local roslogdir="$2"
@@ -277,7 +279,7 @@ start_logged () {
     echo "[WRAPPER] '$1' exited with code $ec on $(hostname) at $(date -Is)"
     exit $ec
   ) >> "$logfile" 2>&1 &
-  echo $!
+  _START_LOGGED_PID=$!
 }
 
 decode_status () {
@@ -489,13 +491,14 @@ start_all_processes () {
   local CUR_NS="$RUN_NS"
 
   LOGGER_LOG="$CONFIG_DIR/logger.log"
-  LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
+  start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
       --ros-args \
       -r __ns:="/$CUR_NS" \
       -p parent_log_dir:="'$CONFIG_DIR'" \
       -p num_tsp_agents:="$NUM_AGENTS" \
-      -p problem_size:="$PROBLEM_SIZE")
+      -p problem_size:="$PROBLEM_SIZE"
+  LOGGER_PID=$_START_LOGGED_PID
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
   # Helper: wait for a single process to print a ready marker in its log.
@@ -547,8 +550,8 @@ start_all_processes () {
     SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
   fi
   SIM_CMD+=( --ros-args -r __ns:="/$CUR_NS" )
-  local spid
-  spid=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
+  start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}"
+  local spid=$_START_LOGGED_PID
   SIM_PIDS+=("$spid")
   PID_ROLE["$spid"]="simulator"
   PID_LOG["$spid"]="$SIM_LOG"
@@ -612,8 +615,8 @@ start_all_processes () {
       )
     fi
 
-    local pid
-    pid=$(start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}")
+    start_logged "$AGENT_LOG" "$ROS2_LOG_DIR" "${CMD[@]}"
+    local pid=$_START_LOGGED_PID
     AGENT_PIDS+=("$pid")
     PID_ROLE["$pid"]="agent[$i]"
     PID_LOG["$pid"]="$AGENT_LOG"
