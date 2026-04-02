@@ -9,7 +9,6 @@ source ../../../../install/local_setup.bash
 # --- restore nounset after sourcing ---
 set -u
 
-
 # ===== Better diagnostics =====
 export RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity} {time} {name}({pid})] {message}'
 export RCUTILS_LOGGING_USE_STDOUT=1
@@ -18,20 +17,15 @@ export PYTHONUNBUFFERED=1
 export PYTHONFAULTHANDLER=1
 export PYTHONASYNCIODEBUG=1
 ulimit -c unlimited || true
-ulimit -n 65536 || ulimit -n 16384 || true   # raise FD limit; each ROS2 node uses ~20-30 FDs
+ulimit -n 65536 || ulimit -n 16384 || true
 echo "[INFO] FD limit: $(ulimit -n)"
 
 # ===== DDS isolation =====
-# Use unicast-only FastDDS config to prevent multicast discovery storms on HPC nodes
-# where many participants start simultaneously and flood the subnet.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/fastdds_no_shm.xml"
-# Suppress cross-host multicast; all DDS traffic stays on localhost.
 export ROS_LOCALHOST_ONLY=1
-# Base domain offset per SLURM job to isolate concurrent jobs from each other.
-# ROS_DOMAIN_ID must be 0-101; we rotate per-run within a 50-slot window per job.
 JOB_DOMAIN_BASE=$(( (${SLURM_JOB_ID:-$$} % 50) * 2 ))
-export ROS_DOMAIN_ID=$JOB_DOMAIN_BASE   # updated per-run in the main loop
+export ROS_DOMAIN_ID=$JOB_DOMAIN_BASE
 echo "[INFO] JOB_DOMAIN_BASE=${JOB_DOMAIN_BASE}  FastDDS profile=${FASTRTPS_DEFAULT_PROFILES_FILE}"
 
 gen_seed() {
@@ -45,7 +39,9 @@ gen_seed() {
 }
 
 # ===== Configuration =====
-NUM_RUNS=200
+# NOTE: No NUM_RUNS here — the SLURM array controls iteration count.
+# This script runs exactly ONE simulation and exits 0 (success) or 1 (failure).
+MAX_STARTUP_ATTEMPTS=3     # retries for transient DDS/startup failures within one invocation
 
 PACKAGE_NAME="cbm_pop"
 LOGGER_EXECUTABLE="simple_fitness_logger"
@@ -61,13 +57,13 @@ TIMEOUT_SECONDS=500
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 
-# ===== Parse CLI (short + long) =====
+# ===== Parse CLI =====
 PARSED=$(getopt -o p:a:m:l:t:r:L:P:N:G:R:E:U:C:B:Q:T:S:H:V: \
   -l p:,problem-size:,a:,agents:,m:,method:,l:,lock:,t:,preserve:,r:,inject:,\
 L:,lr:,P:,positive-reward:,N:,negative-reward:,G:,gamma-decay:,R:,rho:,E:,eta:,\
 U:,use-ucb:,C:,ucb-c:,B:,replay-buffer-size:,Q:,tau:,T:,batch-size:,S:,inject-best-prob:,\
-H:,init-with-heuristic:,V:,problem-class:,problem-seed:,kill-thresholds:,enable-kill:,num-to-kill:,\
-enable-revive:,revive-threshold:,\
+H:,init-with-heuristic:,V:,problem-class:,problem-seed:,run-id:,kill-thresholds:,enable-kill:,\
+num-to-kill:,enable-revive:,revive-threshold:,\
 ucb-window:,is-free-weight-matrix:,is-inject-best-on-cycle:,\
 is-append-first-task:,is-knn-enabled:,is-mimetism-enabled: -- "$@") || {
   echo "Invalid options"; exit 1;
@@ -97,6 +93,7 @@ while true; do
     -H|--H|--init-with-heuristic) INIT_WITH_HEURISTIC="$2"; shift 2 ;;
     --problem-class)              PROBLEM_CLASS="$2"; shift 2 ;;
     --problem-seed)               PROBLEM_SEED="$2"; shift 2 ;;
+    --run-id)                     RUN_ID="$2"; shift 2 ;;        # <-- NEW: which iteration this is
     --kill-thresholds)            KILL_THRESHOLDS_STR="$2"; shift 2 ;;
     --enable-kill)                ENABLE_KILL="$2"; shift 2 ;;
     --num-to-kill)                NUM_TO_KILL="$2"; shift 2 ;;
@@ -136,6 +133,7 @@ INJECT_BEST_PROB=${INJECT_BEST_PROB:-0.90}
 INIT_WITH_HEURISTIC=${INIT_WITH_HEURISTIC:-"false"}
 PROBLEM_CLASS=${PROBLEM_CLASS:-"Simple_Grid"}
 PROBLEM_SEED=${PROBLEM_SEED:-}
+RUN_ID=${RUN_ID:-${SLURM_ARRAY_TASK_ID:-1}}   # fall back to array task ID, then 1
 KILL_THRESHOLDS_STR=${KILL_THRESHOLDS_STR:-"1.0"}
 ENABLE_KILL=${ENABLE_KILL:-"false"}
 NUM_TO_KILL=${NUM_TO_KILL:-"10"}
@@ -147,20 +145,12 @@ IS_APPEND_FIRST_TASK=${IS_APPEND_FIRST_TASK:-"true"}
 IS_KNN_ENABLED=${IS_KNN_ENABLED:-"false"}
 IS_MIMETISM_ENABLED=${IS_MIMETISM_ENABLED:-"true"}
 
-# turn thresholds string into arrays
-if [[ "$ENABLE_KILL" == "true" ]]; then
-  read -r -a KILL_THRESHOLDS <<< "$KILL_THRESHOLDS_STR"
-else
-  KILL_THRESHOLDS=("disabled")
-fi
-
-if [[ "$ENABLE_REVIVE" == "true" ]]; then
-  read -r -a REVIVE_THRESHOLDS <<< "$REVIVE_THRESHOLDS_STR"
-else
-  REVIVE_THRESHOLDS=("disabled")
-fi
+# Single values now (not arrays — each sbatch is already for one kill/revive combo)
+KILL_TH="$KILL_THRESHOLDS_STR"
+REVIVE_TH="$REVIVE_THRESHOLDS_STR"
 
 # ===== Helpers =====
+# (unchanged from original — all helper functions kept as-is)
 
 log_node_diagnostics() {
     local out_dir="$1"
@@ -202,10 +192,6 @@ check_env_coverage_complete() {
     return 1
   fi
 
-  # The last row has the most recent coverage state; any 0 in the JSON array means uncovered tasks remain.
-  # Row format: <timestamp>,<agent_id>,"[1,0,1,...]"
-  # We must check ONLY the JSON array column (3rd field, quoted), not the whole row —
-  # otherwise the agent_id column (e.g. "0" for agent 0) causes a false "not covered" result.
   if tail -n 1 "$env_csv" | awk -F'"' '{print $2}' | grep -qE '\b0\b'; then
     echo "Not all tasks covered in $env_csv"
     return 1
@@ -231,24 +217,19 @@ kill_pid_tree () {
 
 cleanup_run () {
   local logger_pid="$1"; shift
-  # collect sim pids until "--" sentinel
   local -a sim_pids=()
   while [[ "$1" != "--" && $# -gt 0 ]]; do
     sim_pids+=("$1"); shift
   done
-  [[ "$1" == "--" ]] && shift   # consume sentinel
+  [[ "$1" == "--" ]] && shift
   local -a agent_pids=("$@")
 
   kill_pid_tree "$logger_pid"
   for sp in "${sim_pids[@]}"; do kill_pid_tree "$sp"; done
   for p  in "${agent_pids[@]}"; do kill_pid_tree "$p";  done
 
-  # Give the OS a moment to release UDP sockets and DDS resources before
-  # the next run starts on a different domain ID.
   sleep 2
 }
-
-
 
 _START_LOGGED_PID=""
 
@@ -451,11 +432,10 @@ write_param_tag_file () {
 declare -A PID_ROLE
 declare -A PID_LOG
 LOGGER_PID=""
-SIM_PID=()
+SIM_PIDS=()
 AGENT_PIDS=()
 
 start_all_processes () {
-
   local CUR_LOCK="$1"; shift
   local CUR_PRESERVE="$1"; shift
   local CUR_INJECT="$1"; shift
@@ -487,7 +467,6 @@ start_all_processes () {
   local CUR_IS_KNN_ENABLED="$1"; shift
   local CUR_IS_MIMETISM_ENABLED="$1"; shift
 
-  # -- Per-run unique ROS2 namespace to isolate topic traffic --
   local CUR_NS="$RUN_NS"
 
   LOGGER_LOG="$CONFIG_DIR/logger.log"
@@ -501,8 +480,6 @@ start_all_processes () {
   LOGGER_PID=$_START_LOGGED_PID
   PID_ROLE["$LOGGER_PID"]="logger"; PID_LOG["$LOGGER_PID"]="$LOGGER_LOG"
 
-  # Helper: wait for a single process to print a ready marker in its log.
-  # Returns 0 on success, 1 on timeout or crash.
   _wait_for_ready () {
     local _pid="$1" _logfile="$2" _marker="$3" _label="$4"
     local _deadline=$(( $(date +%s) + AGENT_STARTUP_TIMEOUT ))
@@ -531,7 +508,6 @@ start_all_processes () {
     done
   }
 
-  # ---- Single simulator (all robots in one process) ----
   echo "   [STARTUP] Starting simulator (all $NUM_AGENTS robots) | ns=/$CUR_NS"
   SIM_PIDS=()
   local SIM_LOG="$CONFIG_DIR/simulator.log"
@@ -558,12 +534,6 @@ start_all_processes () {
   _wait_for_ready "$spid" "$SIM_LOG" "Simulator created" "simulator" || return 1
   echo "   [STARTUP] Simulator ready."
 
-  # ---- Parallel agent startup: launch all agents at once so all robots begin together ----
-  # Agents are launched simultaneously after the simulator is confirmed ready.
-  # The simulator (all-in-one) already publishes all robot poses, so whichever agent
-  # starts first would begin moving its robot immediately — sequential startup would
-  # cause robots to start in ID order. Parallel launch ensures all agents receive
-  # poses and start their run loops at the same time.
   echo "   [STARTUP] Launching all $NUM_AGENTS agents in parallel..."
   AGENT_PIDS=()
   for ((i=0; i<NUM_AGENTS; i++)); do
@@ -623,7 +593,6 @@ start_all_processes () {
     sleep 0.5
   done
 
-  # Wait for all agents to confirm ready in parallel
   echo "   [STARTUP] Waiting for all $NUM_AGENTS agents to initialize..."
   local start_wait
   start_wait=$(date +%s)
@@ -671,11 +640,8 @@ start_all_processes () {
   ros2 topic pub --rate 5 "/${CUR_NS}/central_control/start_go" std_msgs/msg/Bool "data: true" \
     > /dev/null 2>&1 &
   _start_go_pub_pid=$!
-  SIM_PIDS+=("$_start_go_pub_pid")   # tracked so cleanup_run kills it at end of run
+  SIM_PIDS+=("$_start_go_pub_pid")
 
-  # Wait for all agents to confirm they received the start-go signal.
-  # Use a generous timeout — DDS discovery for a pre-warmed publisher should be fast,
-  # but allow extra time on loaded HPC nodes.
   local _sg_deadline=$(( $(date +%s) + 60 ))
   local -a _sg_ready
   for ((i=0; i<NUM_AGENTS; i++)); do _sg_ready[$i]=0; done
@@ -698,9 +664,6 @@ start_all_processes () {
     sleep 0.2
   done
 
-  # Keep the publisher running for the duration of the run so any agent that
-  # subscribes late (e.g. after a DDS reconnect) still receives start-go.
-  # It will be killed by cleanup_run at the end of the run.
   echo "   [STARTUP] All agents moving. Run underway."
   return 0
 }
@@ -722,192 +685,160 @@ trap on_sigint INT
 trap on_sigterm TERM
 trap on_exit EXIT
 
-LAST_RUN_NUM=""
-SAME_RUN_COUNT=0
+# ===== Build directory paths (same structure as before) =====
+if [[ "$ENABLE_KILL" == "true" ]]; then
+  BASE_ROOT="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_${PROBLEM_CLASS}_kill_${KILL_TH}_killnum_${NUM_TO_KILL}"
+else
+  BASE_ROOT="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_${PROBLEM_CLASS}_kill_disabled"
+fi
 
-# ===== Main: iterate kill & revive thresholds, then runs =====
-for KILL_TH in "${KILL_THRESHOLDS[@]}"; do
-  for REVIVE_TH in "${REVIVE_THRESHOLDS[@]}"; do
+if [[ "$ENABLE_REVIVE" == "true" ]]; then
+  COMBO_ROOT="${BASE_ROOT}_revive_${REVIVE_TH}"
+else
+  COMBO_ROOT="${BASE_ROOT}_revive_disabled"
+fi
 
-    if [[ "$ENABLE_KILL" == "true" ]]; then
-      BASE_ROOT="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_${PROBLEM_CLASS}_kill_${KILL_TH}_killnum_${NUM_TO_KILL}"
-    else
-      BASE_ROOT="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_${PROBLEM_CLASS}_kill_disabled"
+mkdir -p "$COMBO_ROOT"
+
+METHOD_TAG="$(slug "$METHOD")"
+PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_inject_${INJECT}_pinj_${INJECT_BEST_PROB}_ucb_${USE_UCB}_ucbc_${UCB_C}_ucbw_${UCB_WINDOW}_replay_${REPLAY_BUFFER_SIZE}_tau_${TAU}_batch_${BATCH_SIZE}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_heur_${INIT_WITH_HEURISTIC}_freewm_${IS_FREE_WEIGHT_MATRIX}_injectcyc_${IS_INJECT_BEST_ON_CYCLE}_append_${IS_APPEND_FIRST_TASK}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}"
+mkdir -p "$PARAM_DIR"
+
+write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
+                      "$INJECT" "$INJECT_BEST_PROB" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" \
+                      "$NEGATIVE_REWARD" "$RHO" "$ETA" "$REPLAY_BUFFER_SIZE" "$TAU" \
+                      "$BATCH_SIZE" "$INIT_WITH_HEURISTIC" "$NUM_AGENTS" "$PROBLEM_SIZE" "$PROBLEM_CLASS" \
+                      "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH" \
+                      "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+                      "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
+
+# ===== Idempotency check =====
+# If this run_ID already completed successfully, exit immediately.
+# This makes retries safe — re-running a completed task is a no-op.
+CONFIG_DIR="$PARAM_DIR/run_${RUN_ID}"
+if [[ -d "$CONFIG_DIR" ]]; then
+  if check_coverage_complete "$CONFIG_DIR" && check_env_coverage_complete "$CONFIG_DIR"; then
+    echo "[INFO] run_${RUN_ID} already complete in $PARAM_DIR — nothing to do."
+    exit 0
+  else
+    echo "[RECOVER] run_${RUN_ID} exists but is incomplete. Deleting and re-running."
+    rm -rf "$CONFIG_DIR"
+  fi
+fi
+
+# ===== Execute exactly ONE run, with internal startup retries =====
+# If startup itself fails transiently (DDS storms, port clashes), retry up to
+# MAX_STARTUP_ATTEMPTS times before giving up and exiting 1 so the SLURM array
+# retry loop at the sbatch level can try the whole thing again on a clean slate.
+
+RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
+export ROS_DOMAIN_ID=$(( JOB_DOMAIN_BASE + (RUN_ID % 2) ))
+RUN_NS="run${RUN_ID}_$(date +%s%N)_$$_${RANDOM}"
+CONFIG_DIR="$PARAM_DIR/run_${RUN_ID}"
+ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
+
+startup_attempt=0
+while true; do
+  startup_attempt=$(( startup_attempt + 1 ))
+  echo "============================="
+  echo "[INFO] run_id=${RUN_ID} startup_attempt=${startup_attempt}/${MAX_STARTUP_ATTEMPTS} ns=${RUN_NS}"
+  echo "[INFO] method=$METHOD kill_enabled=$ENABLE_KILL kill_th=$KILL_TH revive_enabled=$ENABLE_REVIVE revive_th=$REVIVE_TH"
+  echo "[INFO] agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE problem_class=$PROBLEM_CLASS seed=$RUN_SEED"
+  echo "============================="
+
+  rm -rf "$CONFIG_DIR"
+  mkdir -p "$ROS2_LOG_DIR"
+  log_node_diagnostics "$CONFIG_DIR"
+  write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$(unique_id)" \
+                      "$USE_UCB" "$UCB_C" "$UCB_WINDOW" "$INJECT" "$INJECT_BEST_PROB" \
+                      "$PROBLEM_CLASS" "$KILL_TH" "$REVIVE_TH" \
+                      "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+                      "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
+
+  if ! start_all_processes \
+        "$LOCK" "$PRESERVE" "$INJECT" "$INJECT_BEST_PROB" "$METHOD" \
+        "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" \
+        "$ETA" "$RHO" "$RHO" \
+        "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
+        "$REPLAY_BUFFER_SIZE" "$TAU" "$BATCH_SIZE" "$PROBLEM_CLASS" "$RUN_SEED" \
+        "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
+        "$ENABLE_REVIVE" "$REVIVE_TH" \
+        "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
+        "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"; then
+
+    echo "[FAIL] Startup failed (attempt $startup_attempt)."
+    cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
+    rm -rf "$CONFIG_DIR"
+
+    if (( startup_attempt >= MAX_STARTUP_ATTEMPTS )); then
+      echo "[FATAL] Exhausted $MAX_STARTUP_ATTEMPTS startup attempts for run_${RUN_ID}. Exiting 1."
+      exit 1   # tells sbatch retry loop to try again
     fi
 
-    if [[ "$ENABLE_REVIVE" == "true" ]]; then
-      COMBO_ROOT="${BASE_ROOT}_revive_${REVIVE_TH}"
-    else
-      COMBO_ROOT="${BASE_ROOT}_revive_disabled"
+    sleep 15
+    # Rotate namespace and domain ID for the next attempt to get a clean DDS slate
+    RUN_NS="run${RUN_ID}_$(date +%s%N)_$$_${RANDOM}"
+    export ROS_DOMAIN_ID=$(( JOB_DOMAIN_BASE + ( (RUN_ID + startup_attempt) % 2 ) ))
+    continue
+  fi
+
+  # ---- Startup succeeded; now wait for completion or timeout ----
+  START_TIME=$(date +%s)
+  RUN_TIMEOUT=0
+  FIRST_DEAD_PID=""
+  _LAST_HEARTBEAT=0
+
+  while true; do
+    sleep 2
+    CURRENT_TIME=$(date +%s)
+    ELAPSED=$(( CURRENT_TIME - START_TIME ))
+
+    if (( ELAPSED - _LAST_HEARTBEAT >= 30 )); then
+      echo "[HEARTBEAT] run_id=${RUN_ID} elapsed=${ELAPSED}s"
+      _LAST_HEARTBEAT=$ELAPSED
     fi
 
-    mkdir -p "$COMBO_ROOT"
-
-    METHOD_TAG="$(slug "$METHOD")"
-    PARAM_DIR="$COMBO_ROOT/method_${METHOD_TAG}_lock_${LOCK}_preserve_${PRESERVE}_inject_${INJECT}_pinj_${INJECT_BEST_PROB}_ucb_${USE_UCB}_ucbc_${UCB_C}_ucbw_${UCB_WINDOW}_replay_${REPLAY_BUFFER_SIZE}_tau_${TAU}_batch_${BATCH_SIZE}_gamma_${GAMMA_DECAY}_lr_${LR}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_heur_${INIT_WITH_HEURISTIC}_freewm_${IS_FREE_WEIGHT_MATRIX}_injectcyc_${IS_INJECT_BEST_ON_CYCLE}_append_${IS_APPEND_FIRST_TASK}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}"
-    mkdir -p "$PARAM_DIR"
-
-    write_param_tag_file "$PARAM_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
-                          "$INJECT" "$INJECT_BEST_PROB" "$GAMMA_DECAY" "$LR" "$POSITIVE_REWARD" \
-                          "$NEGATIVE_REWARD" "$RHO" "$ETA" "$REPLAY_BUFFER_SIZE" "$TAU" \
-                          "$BATCH_SIZE" "$INIT_WITH_HEURISTIC" "$NUM_AGENTS" "$PROBLEM_SIZE" "$PROBLEM_CLASS" \
-                          "$ENABLE_KILL" "$KILL_TH" "$ENABLE_REVIVE" "$REVIVE_TH" \
-                          "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
-                          "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
-
-    LAST_RUN_DIR=""
-    LAST_RUN_NUM_LOCAL=0
-    if ls -d "$PARAM_DIR"/run_* >/dev/null 2>&1; then
-      LAST_RUN_DIR=$(ls -d "$PARAM_DIR"/run_* 2>/dev/null | sort -V | tail -n 1)
-      LAST_RUN_NUM_LOCAL=$(basename "$LAST_RUN_DIR" | sed 's/run_//')
-      if ! check_coverage_complete "$LAST_RUN_DIR" || ! check_env_coverage_complete "$LAST_RUN_DIR"; then
-        echo "[RECOVER] Last run $LAST_RUN_NUM_LOCAL in $PARAM_DIR was incomplete. Deleting and re-running it."
-        rm -rf "$LAST_RUN_DIR" || true
-        START_RUN=$LAST_RUN_NUM_LOCAL
-      else
-        START_RUN=$((LAST_RUN_NUM_LOCAL + 1))
+    if ! check_first_dead; then
+      role="${PID_ROLE[$FIRST_DEAD_PID]}"
+      logf="${PID_LOG[$FIRST_DEAD_PID]}"
+      if wait "$FIRST_DEAD_PID"; then STATUS=0; else STATUS=$?; fi
+      echo "[ELAPSED]: ${ELAPSED}s"
+      if [ "$ELAPSED" -le 30 ]; then
+        echo "[EARLY FAILURE DETECTED] $role (pid=$FIRST_DEAD_PID) exited with code $STATUS after ${ELAPSED}s"
       fi
-    else
-      START_RUN=1
+      echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
+      echo "--------- last 120 lines of $logf ---------"
+      tail -n 120 "$logf" || true
+      echo "-------------------------------------------"
+      break
     fi
 
-    if [ "$START_RUN" -gt "$NUM_RUNS" ]; then
-      echo "[INFO] Already completed $((START_RUN-1)) runs for $PARAM_DIR. Skipping."
-      continue
+    if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+      echo "[TIMEOUT] run_${RUN_ID} exceeded ${TIMEOUT_SECONDS}s."
+      RUN_TIMEOUT=1
+      break
     fi
-
-    run=$START_RUN
-    while [ "$run" -le "$NUM_RUNS" ]; do
-
-      RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
-
-      # Rotate ROS_DOMAIN_ID each run to avoid stale FastDDS SHM mutexes from
-      # previous runs' killed processes.  Alternating between two adjacent domain
-      # IDs gives the previous domain's processes time to fully release their
-      # resources before we return to it.  Each job uses a 2-slot window so
-      # concurrent jobs with different JOB_DOMAIN_BASE values don't collide.
-      export ROS_DOMAIN_ID=$(( JOB_DOMAIN_BASE + (run % 2) ))
-
-      # ---- Generate a unique ROS2 namespace for this run ----
-      # Combines run number, nanosecond timestamp, PID, and RANDOM to
-      # guarantee uniqueness even across concurrent HPC jobs on the same node.
-      RUN_NS="run${run}_$(date +%s%N)_$$_${RANDOM}"
-
-      echo "============================="
-      echo "[INFO] Run $run/$NUM_RUNS :: ns=$RUN_NS :: kill_enabled=$ENABLE_KILL :: kill_th=$KILL_TH :: revive_enabled=$ENABLE_REVIVE :: revive_th=$REVIVE_TH :: method=$METHOD lock=$LOCK preserve=$PRESERVE inject=$INJECT pinj=$INJECT_BEST_PROB gamma=$GAMMA_DECAY lr=$LR pos=$POSITIVE_REWARD neg=$NEGATIVE_REWARD rho=$RHO eta=$ETA replay=$REPLAY_BUFFER_SIZE tau=$TAU batch=$BATCH_SIZE ucb=$USE_UCB ucb_c=$UCB_C ucb_window=$UCB_WINDOW num_agents=$NUM_AGENTS problem_size=$PROBLEM_SIZE heur=$INIT_WITH_HEURISTIC problem_class=$PROBLEM_CLASS seed=$RUN_SEED free_wm=$IS_FREE_WEIGHT_MATRIX inject_cyc=$IS_INJECT_BEST_ON_CYCLE append=$IS_APPEND_FIRST_TASK knn=$IS_KNN_ENABLED mimetism=$IS_MIMETISM_ENABLED"
-      echo "============================="
-
-      CONFIG_DIR="$PARAM_DIR/run_${run}"
-      ROS2_LOG_DIR="$CONFIG_DIR/ros_logs"
-      mkdir -p "$ROS2_LOG_DIR"
-
-      log_node_diagnostics "$CONFIG_DIR"
-
-      write_run_settings "$CONFIG_DIR" "$METHOD" "$LOCK" "$PRESERVE" "$(unique_id)" \
-                          "$USE_UCB" "$UCB_C" "$UCB_WINDOW" "$INJECT" "$INJECT_BEST_PROB" \
-                          "$PROBLEM_CLASS" "$KILL_TH" "$REVIVE_TH" \
-                          "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
-                          "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"
-
-      if ! start_all_processes \
-            "$LOCK" "$PRESERVE" "$INJECT" "$INJECT_BEST_PROB" "$METHOD" \
-            "$LR" "$GAMMA_DECAY" "$POSITIVE_REWARD" "$NEGATIVE_REWARD" \
-            "$ETA" "$RHO" \
-            "$RHO" \
-            "$USE_UCB" "$UCB_C" "$UCB_WINDOW" \
-            "$REPLAY_BUFFER_SIZE" "$TAU" "$BATCH_SIZE" "$PROBLEM_CLASS" "$RUN_SEED" \
-            "$ENABLE_KILL" "$KILL_TH" "$NUM_TO_KILL" \
-            "$ENABLE_REVIVE" "$REVIVE_TH" \
-            "$IS_FREE_WEIGHT_MATRIX" "$IS_INJECT_BEST_ON_CYCLE" \
-            "$IS_APPEND_FIRST_TASK" "$IS_KNN_ENABLED" "$IS_MIMETISM_ENABLED"; then
-
-        echo "[FAIL] Start-up failed. Cleaning up and retrying run $run..."
-        cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
-        rm -rf "$CONFIG_DIR" || true
-
-        if [[ "$LAST_RUN_NUM" == "$run" ]]; then
-          SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
-        else
-          LAST_RUN_NUM="$run"
-          SAME_RUN_COUNT=1
-        fi
-        if [ "$SAME_RUN_COUNT" -ge 5 ]; then
-          echo "[FATAL] Run $run has failed start-up 5 times. Exiting."
-          exit 1
-        fi
-        continue
-      fi
-
-      START_TIME=$(date +%s)
-      RUN_TIMEOUT=0
-      FIRST_DEAD_PID=""
-      _LAST_HEARTBEAT=0
-      while true; do
-        sleep 2
-        CURRENT_TIME=$(date +%s)
-        ELAPSED=$((CURRENT_TIME - START_TIME))
-
-        # Print a heartbeat every 30 s so the SLURM output file keeps growing
-        # and we can confirm the job is alive during long silent simulation runs.
-        if (( ELAPSED - _LAST_HEARTBEAT >= 30 )); then
-          echo "[HEARTBEAT] run=$run elapsed=${ELAPSED}s"
-          _LAST_HEARTBEAT=$ELAPSED
-        fi
-
-        if ! check_first_dead; then
-          role="${PID_ROLE[$FIRST_DEAD_PID]}"
-          logf="${PID_LOG[$FIRST_DEAD_PID]}"
-          if wait "$FIRST_DEAD_PID"; then
-            STATUS=0
-          else
-            STATUS=$?
-          fi
-          echo "[ELAPSED]: ${ELAPSED}s"
-          if [ "$ELAPSED" -le 30 ]; then
-            echo "[EARLY FAILURE DETECTED] $role (pid=$FIRST_DEAD_PID) exited with code $STATUS after ${ELAPSED}s"
-          fi
-          echo "[DETECT] $role (pid=$FIRST_DEAD_PID) $(decode_status "$STATUS") after ${ELAPSED}s"
-          echo "--------- last 120 lines of $logf ---------"
-          tail -n 120 "$logf" || true
-          echo "-------------------------------------------"
-          break
-        fi
-
-        if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
-          echo "[TIMEOUT] Run $run exceeded ${TIMEOUT_SECONDS}s."
-          RUN_TIMEOUT=1
-          break
-        fi
-      done
-
-      cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
-
-      if ! check_coverage_complete "$CONFIG_DIR" || ! check_env_coverage_complete "$CONFIG_DIR"; then
-        if [[ "$LAST_RUN_NUM" == "$run" ]]; then
-          SAME_RUN_COUNT=$((SAME_RUN_COUNT + 1))
-        else
-          LAST_RUN_NUM="$run"
-          SAME_RUN_COUNT=1
-        fi
-        if [ "$SAME_RUN_COUNT" -ge 5 ]; then
-          echo "[FATAL] Run $run has failed $SAME_RUN_COUNT times. Exiting to avoid infinite loop."
-          echo "[DEBUG] Preserving final failed run directory for inspection: $CONFIG_DIR"
-          exit 1
-        fi
-        echo "[CLEANUP] Deleting failed run directory: $CONFIG_DIR"
-        rm -rf "$CONFIG_DIR" || true
-        echo "[RETRY] Repeating run $run (kill_th=$KILL_TH, revive_th=$REVIVE_TH)"
-        continue
-      fi
-
-      LAST_RUN_NUM="$run"
-      SAME_RUN_COUNT=0
-
-      echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
-      echo "[INFO] Completed run $run for $CONFIG_DIR (timeout=${RUN_TIMEOUT})"
-      run=$((run + 1))
-    done
   done
-done
 
-echo "[INFO] All simulations completed."
+  cleanup_run "${LOGGER_PID:-}" "${SIM_PIDS[@]:-}" -- "${AGENT_PIDS[@]:-}"
+
+  # ---- Coverage check: the definitive success signal ----
+  if check_coverage_complete "$CONFIG_DIR" && check_env_coverage_complete "$CONFIG_DIR"; then
+    echo "end_iso=$(date -Is)" >> "$CONFIG_DIR/run_settings.txt"
+    echo "[SUCCESS] run_${RUN_ID} complete (timeout=${RUN_TIMEOUT})."
+    exit 0   # <-- tells sbatch retry loop: done, advance to next array task
+  fi
+
+  # Coverage incomplete — treat same as startup failure for retry purposes
+  echo "[FAIL] Coverage incomplete after run_${RUN_ID} (startup_attempt=$startup_attempt)."
+  rm -rf "$CONFIG_DIR"
+
+  if (( startup_attempt >= MAX_STARTUP_ATTEMPTS )); then
+    echo "[FATAL] Exhausted $MAX_STARTUP_ATTEMPTS attempts for run_${RUN_ID}. Exiting 1."
+    exit 1   # <-- tells sbatch retry loop: try this array task again
+  fi
+
+  sleep 15
+  RUN_NS="run${RUN_ID}_$(date +%s%N)_$$_${RANDOM}"
+  export ROS_DOMAIN_ID=$(( JOB_DOMAIN_BASE + ( (RUN_ID + startup_attempt) % 2 ) ))
+done
