@@ -255,12 +255,28 @@ start_logged () {
   local roslogdir="$2"
   shift 2
   mkdir -p "$(dirname "$logfile")" "$roslogdir"
-  RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
-  ROS_LOG_DIR="$roslogdir" \
-  PYTHONUNBUFFERED=1 \
-  PYTHONFAULTHANDLER=1 \
-  PYTHONASYNCIODEBUG=1 \
-  bash -c 'exec stdbuf -oL -eL "$@" >>"$0" 2>&1' "$logfile" "$@" &
+  (
+    echo "[WRAPPER] Starting '$1' on $(hostname) at $(date -Is)" >> "$logfile"
+    if command -v stdbuf >/dev/null 2>&1; then
+      RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
+      ROS_LOG_DIR="$roslogdir" \
+      PYTHONUNBUFFERED=1 \
+      PYTHONFAULTHANDLER=1 \
+      PYTHONASYNCIODEBUG=1 \
+      stdbuf -oL -eL "$@" >> "$logfile" 2>&1
+    else
+      echo "[WRAPPER] stdbuf not found on $(hostname) — running without line buffering" >> "$logfile"
+      RCUTILS_LOGGING_DIRECTORY="$roslogdir" \
+      ROS_LOG_DIR="$roslogdir" \
+      PYTHONUNBUFFERED=1 \
+      PYTHONFAULTHANDLER=1 \
+      PYTHONASYNCIODEBUG=1 \
+      "$@" >> "$logfile" 2>&1
+    fi
+    ec=$?
+    echo "[WRAPPER] '$1' exited with code $ec on $(hostname) at $(date -Is)" >> "$logfile"
+    exit $ec
+  ) &
   echo $!
 }
 
