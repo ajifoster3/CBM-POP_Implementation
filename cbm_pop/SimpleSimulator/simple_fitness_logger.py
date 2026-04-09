@@ -157,7 +157,7 @@ class SimpleFitnessLogger(Node):
             callback_group=vital_cb_group,
         )
 
-        self.environmental_representation_state = [False] * (self.problem_size * self.problem_size)
+        self.environmental_representation_state = None
 
         self.stop_subscriber = self.create_subscription(
             Bool, 'stop_plotting', self.stop_callback, 10
