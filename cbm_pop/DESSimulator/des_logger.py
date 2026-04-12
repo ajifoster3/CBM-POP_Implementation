@@ -27,9 +27,10 @@ class DESLogger:
         self._last_covered = -1
 
         def _open(name, headers):
-            f = open(os.path.join(output_dir, name), 'w', newline='')
+            f = open(os.path.join(output_dir, name), 'w', newline='', buffering=1)
             w = csv.writer(f)
             w.writerow(headers)
+            f.flush()
             return f, w
 
         self._cov_f, self._cov_w = _open(

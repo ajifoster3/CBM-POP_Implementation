@@ -894,14 +894,10 @@ class SimpleProblem:
         Returns a cost matrix representing the traversal cost from each
         task_pose to each other task_pose, calculated as Euclidean distance.
         """
-        num_tasks = len(self.task_poses)
-        cost_map = np.zeros((num_tasks, num_tasks))
-        for i in range(num_tasks):
-            for j in range(num_tasks):
-                if i != j:
-                    x1, y1 = self.task_poses[i]
-                    x2, y2 = self.task_poses[j]
-                    cost_map[i][j] = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        tasks    = np.array(self.task_poses, dtype=float)  # (n, 2)
+        diff     = tasks[:, np.newaxis, :] - tasks[np.newaxis, :, :]  # (n, n, 2)
+        cost_map = np.sqrt((diff ** 2).sum(axis=2))
+        np.fill_diagonal(cost_map, 0.0)
         return cost_map
 
     def update_robot_cost_matrix(self, robot_poses):
@@ -910,27 +906,17 @@ class SimpleProblem:
         robot position to each task_pose.
         """
         valid_robot_poses = [pose for pose in robot_poses if pose is not None]
-        num_robots = len(valid_robot_poses)
-        num_tasks = len(self.task_poses)
-        cost_map = np.zeros((num_robots, num_tasks))
-        for i, robot_pose in enumerate(valid_robot_poses):
-            for j, task_pose in enumerate(self.task_poses):
-                x1, y1 = robot_pose
-                x2, y2 = task_pose
-                cost_map[i][j] = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        self.current_robot_cost_matrix = cost_map
+        robots = np.array(valid_robot_poses, dtype=float)   # (n_robots, 2)
+        tasks  = np.array(self.task_poses,   dtype=float)   # (n_tasks,  2)
+        diff   = robots[:, np.newaxis, :] - tasks[np.newaxis, :, :]  # (n_robots, n_tasks, 2)
+        self.current_robot_cost_matrix = np.sqrt((diff ** 2).sum(axis=2))
 
     def initialize_robot_initial_pose_cost_matrix(self, initial_robot_poses):
         """
         Initialises the cost map representing traversal cost from each agent's
         starting position to each task_pose.
         """
-        num_robots = len(initial_robot_poses)
-        num_tasks = len(self.task_poses)
-        cost_map = np.zeros((num_robots, num_tasks))
-        for i, robot_pose in enumerate(initial_robot_poses):
-            for j, task_pose in enumerate(self.task_poses):
-                x1, y1 = robot_pose
-                x2, y2 = task_pose
-                cost_map[i][j] = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        self.initial_robot_cost_matrix = cost_map
+        robots = np.array(initial_robot_poses, dtype=float)  # (n_robots, 2)
+        tasks  = np.array(self.task_poses,     dtype=float)  # (n_tasks,  2)
+        diff   = robots[:, np.newaxis, :] - tasks[np.newaxis, :, :]
+        self.initial_robot_cost_matrix = np.sqrt((diff ** 2).sum(axis=2))
