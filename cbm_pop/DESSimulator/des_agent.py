@@ -258,6 +258,8 @@ class DESAgent:
         op_idx  = self._op_index(step.operator)
         self.previous_experience.append([step.condition, op_idx, gain])
 
+        step_improved_local = (loc_f == float('inf')) or (new_f < loc_f)
+
         # Step-level learning
         if self.learning_method == LearningMethod.Q_LEARNING_STEP:
             self._learning_step(step.condition, op_idx, step_improved_local)
@@ -267,8 +269,6 @@ class DESAgent:
         elif self.learning_method == LearningMethod.UCB:
             self.ucb_bandit.update(op_idx, -gain)
             self.ucb_bandit.N += 1
-
-        step_improved_local = (loc_f == float('inf')) or (new_f < loc_f)
         if step_improved_local:
             self.local_best_solution  = deepcopy(result)
             self.best_local_improved  = True

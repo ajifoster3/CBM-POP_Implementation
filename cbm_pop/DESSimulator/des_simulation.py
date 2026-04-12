@@ -155,6 +155,9 @@ class DESSimulation:
                     other.receive_coalition_best(
                         agent.coalition_best_solution, agent_id, weights
                     )
+                    # Re-route if the new coalition assigned this robot a task
+                    # and it is currently idle (no pending arrival event).
+                    self._reschedule_robot(other.agent_id)
             # Re-route this agent's robot if its assigned task changed
             self._reschedule_robot(agent_id)
 
@@ -213,12 +216,13 @@ class DESSimulation:
             if self.logger:
                 self.logger.task_covered(self.sim_time, task_id, robot_id)
 
-            # Any robot whose current goal just became covered needs rerouting
+            # Any robot physically heading to the now-covered task needs rerouting.
+            # Check the robot's goal position rather than current_task, because
+            # handle_task_covered() has already advanced current_task for all agents.
+            covered_goal = tuple(self.problem.task_poses[task_id])
             for other in self.robots:
-                if other.robot_id != robot_id:
-                    a = self.agents[other.robot_id]
-                    if a.current_task == task_id:
-                        self._reschedule_robot(other.robot_id)
+                if other.robot_id != robot_id and other._goal == covered_goal:
+                    self._reschedule_robot(other.robot_id)
 
         # Send this robot to its next task
         self._reschedule_robot(robot_id)
