@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""
+Entry point for the CBM-POP Discrete Event Simulation.
+
+Run directly:
+    python -m cbm_pop.DESSimulator.run_des_sim --num_agents 5 --problem_size 10
+
+Or, if registered as a console script in setup.py:
+    des_sim --num_agents 5 --problem_size 10
+"""
+
+import argparse
+import os
+import sys
+import time
+
+from cbm_pop.DESSimulator.des_logger import DESLogger
+from cbm_pop.DESSimulator.des_simulation import DESSimulation
+from cbm_pop.SimpleSimulator.simple_problem import ProblemClass, SimpleProblem
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description='CBM-POP Discrete Event Simulation')
+
+    # Problem
+    p.add_argument('--num_agents',    type=int,   default=5)
+    p.add_argument('--problem_size',  type=int,   default=10)
+    p.add_argument('--problem_class', type=str,   default='Simple_Grid')
+    p.add_argument('--problem_seed',  type=int,   default=1)
+    p.add_argument('--speed',         type=float, default=1.0,
+                   help='Robot speed (grid units / sim-second)')
+    p.add_argument('--max_sim_time',  type=float, default=float('inf'),
+                   help='Hard cap on sim time (default: unlimited)')
+
+    # Agent
+    p.add_argument('--method',             type=str,   default='Q-Learning',
+                   choices=['Q-Learning', 'Q-Learning-Step', 'Q-Learning-Separate',
+                            'Ferreira_et_al.', 'UCB', 'Uniform'])
+    p.add_argument('--pop_size',           type=int,   default=10)
+    p.add_argument('--di_cycle_length',    type=int,   default=10)
+    p.add_argument('--num_solution_attempts', type=int, default=21)
+    p.add_argument('--lr',                 type=float, default=0.22)
+    p.add_argument('--gamma_decay',        type=float, default=0.95)
+    p.add_argument('--positive_reward',    type=float, default=7.0)
+    p.add_argument('--negative_reward',    type=float, default=-8.0)
+    p.add_argument('--rho',                type=float, default=0.5)
+    p.add_argument('--eta',                type=float, default=0.1,
+                   help='Ferreira et al. discount factor')
+    p.add_argument('--ucb_c',              type=float, default=1.414,
+                   help='UCB exploration constant')
+    p.add_argument('--ucb_window',         type=int,   default=200,
+                   help='UCB sliding window size')
+    p.add_argument('--is_free_weight_matrix', action='store_true',
+                   help='Use free (all-ones) weight matrix instead of classical')
+    p.add_argument('--is_knn_enabled',     action='store_true')
+    p.add_argument('--no_mimetism',        action='store_true')
+    p.add_argument('--inject_best',        action='store_true')
+    p.add_argument('--inject_best_prob',   type=float, default=0.9)
+    p.add_argument('--no_append_first_task', action='store_true',
+                   help='Disable prepending current task when receiving coalition best')
+
+    # Output
+    p.add_argument('--output_dir', type=str, default=None,
+                   help='Directory for CSV logs (default: no logging)')
+    p.add_argument('--progress_interval', type=float, default=0.0,
+                   help='Print a progress line every this many sim-time units (0 = off)')
+
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    problem_class = ProblemClass(args.problem_class)
+    problem = SimpleProblem(
+        problem_class,
+        grid_size=args.problem_size,
+        problem_seed=args.problem_seed,
+    )
+
+    agent_kwargs = dict(
+        method=args.method,
+        pop_size=args.pop_size,
+        di_cycle_length=args.di_cycle_length,
+        num_solution_attempts=args.num_solution_attempts,
+        lr=args.lr,
+        gamma_decay=args.gamma_decay,
+        positive_reward=args.positive_reward,
+        negative_reward=args.negative_reward,
+        rho=args.rho,
+        eta=args.eta,
+        ucb_c=args.ucb_c,
+        ucb_window=args.ucb_window,
+        is_free_weight_matrix=args.is_free_weight_matrix,
+        is_knn_enabled=args.is_knn_enabled,
+        is_mimetism_enabled=not args.no_mimetism,
+        is_inject_best_on_cycle=args.inject_best,
+        inject_best_prob=args.inject_best_prob,
+        is_append_first_task=not args.no_append_first_task,
+    )
+
+    logger = None
+    if args.output_dir:
+        logger = DESLogger(args.output_dir, problem.num_tasks)
+
+    sim = DESSimulation(
+        problem=problem,
+        num_agents=args.num_agents,
+        robot_speed=args.speed,
+        seed=args.problem_seed,
+        agent_kwargs=agent_kwargs,
+        max_sim_time=args.max_sim_time,
+        logger=logger,
+    )
+
+    print(f'Problem: {args.problem_class}  size={args.problem_size}  '
+          f'tasks={problem.num_tasks}  agents={args.num_agents}')
+    print('Running DES...')
+
+    wall_start = time.monotonic()
+    summary    = sim.run(progress_interval=args.progress_interval)
+    wall_time  = time.monotonic() - wall_start
+
+    if logger:
+        logger.close()
+
+    print()
+    print(f'  sim time      : {summary["sim_time"]:.4f} s')
+    print(f'  wall time     : {wall_time:.2f} s')
+    print(f'  tasks covered : {summary["tasks_covered"]} / {summary["total_tasks"]}')
+    print(f'  complete      : {summary["complete"]}')
+    print(f'  iterations    : {summary["iterations_per_agent"]}')
+    print(f'  coalition fit : '
+          f'{[f"{f:.3f}" for f in summary["coalition_fitness"]]}')
+
+    sys.exit(0 if summary['complete'] else 1)
+
+
+if __name__ == '__main__':
+    main()
