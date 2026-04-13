@@ -335,7 +335,16 @@ class DESAgent:
             if modified is not None and self._fitness(modified) < self._fitness(candidate):
                 candidate = modified
 
-        if self._fitness(candidate) < self._fitness(self.coalition_best_solution):
+        num_uncovered = sum(1 for c in self.is_covered if not c)
+        _coal_incomplete = (
+            num_uncovered > 0
+            and self.coalition_best_solution is not None
+            and len(self.coalition_best_solution[0]) < num_uncovered
+        )
+        _candidate_complete = (num_uncovered == 0 or len(candidate[0]) >= num_uncovered)
+
+        if (self._fitness(candidate) < self._fitness(self.coalition_best_solution)
+                or (_coal_incomplete and _candidate_complete)):
             self.coalition_best_solution = candidate
             self.coalition_best_agent    = sender_id
             self._assign_next_task(candidate)

@@ -47,6 +47,8 @@ class SimpleFitness:
         """
         try:
             task_order, agent_task_counts = solution
+            if not task_order:
+                return float('inf')
             max_cost = 0
             total_cost = 0
             num_agents_with_tasks = 0

@@ -272,7 +272,6 @@ trap on_exit    EXIT
 run_one() {
   local _run_id="$1" _seed="$2"
   local _cfg="$PARAM_DIR/run_${_run_id}"
-  rm -rf "$_cfg"
   mkdir -p "$_cfg"
 
   write_run_settings "$_cfg" "$_seed" "$(unique_id)"
@@ -301,6 +300,7 @@ run_one() {
 
     if (( _elapsed >= TIMEOUT_SECONDS )); then
       echo "   [TIMEOUT] run_id=${_run_id} exceeded ${TIMEOUT_SECONDS}s — killing."
+      echo "[FAILURE_REASON] timeout after ${TIMEOUT_SECONDS}s" >> "$_log"
       kill_pid_tree "$SIM_PID"
       SIM_PID=""
       return 1
@@ -316,6 +316,7 @@ run_one() {
 
   if [ "$_status" -ne 0 ]; then
     echo "   [FAIL] run_id=${_run_id} exited with code ${_status} after ${_elapsed}s"
+    echo "[FAILURE_REASON] python exited with code ${_status}" >> "$_log"
     echo "   --- last 30 lines of $_log ---"
     tail -n 30 "$_log" || true
     return 1
@@ -323,6 +324,7 @@ run_one() {
 
   if ! check_des_complete "$_cfg"; then
     echo "   [FAIL] run_id=${_run_id} coverage incomplete after ${_elapsed}s"
+    echo "[FAILURE_REASON] coverage incomplete at exit (no timeout)" >> "$_log"
     return 1
   fi
 
@@ -350,8 +352,8 @@ else
     if check_des_complete "$LAST_DIR" 2>/dev/null; then
       START_RUN=$(( LAST_NUM + 1 ))
     else
-      echo "[RECOVER] Last run $LAST_NUM was incomplete — re-running it."
-      rm -rf "$LAST_DIR"
+      echo "[RECOVER] Last run $LAST_NUM was incomplete — preserving logs and re-running."
+      mv "$LAST_DIR" "${LAST_DIR}_recovered_$(date +%s)"
       START_RUN=$LAST_NUM
     fi
   fi
@@ -381,7 +383,13 @@ while [ "$run" -le "$END_RUN" ]; do
       success=true
       break
     fi
-    rm -rf "$PARAM_DIR/run_${run}"
+    # Preserve failed attempt logs for post-mortem inspection
+    local _failed_dir="$PARAM_DIR/run_${run}_failed_attempt_${attempt}"
+    rm -rf "$_failed_dir"
+    if [ -d "$PARAM_DIR/run_${run}" ]; then
+      mv "$PARAM_DIR/run_${run}" "$_failed_dir"
+      echo "   [PRESERVED] Failed logs saved to $_failed_dir"
+    fi
     if [ $attempt -lt $MAX_ATTEMPTS ]; then
       echo "   [RETRY] attempt $attempt/$MAX_ATTEMPTS failed — retrying run $run"
       sleep 2
