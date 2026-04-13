@@ -203,8 +203,15 @@ class DESAgent:
 
         self._strip_covered_solutions()
 
-        # Re-seed population if empty
-        if not self.current_solution or not self.current_solution[0]:
+        # Re-seed population if empty or if current solution is missing uncovered tasks
+        num_uncovered = sum(1 for c in self.is_covered if not c)
+        _sol_incomplete = (
+            num_uncovered > 0
+            and self.current_solution
+            and self.current_solution[0]
+            and len(self.current_solution[0]) < num_uncovered
+        )
+        if not self.current_solution or not self.current_solution[0] or _sol_incomplete:
             self.population = self._generate_population_voronoi()
             self.current_parent_idx, self.current_solution = self._select_solution()
 
@@ -249,6 +256,7 @@ class DESAgent:
             self.no_improvement_attempt_count += 1
             return False
 
+        num_uncovered = sum(1 for c in self.is_covered if not c)
         new_f  = self._fitness(result)
         cur_f  = self._fitness(self.current_solution)
         loc_f  = self._fitness(self.local_best_solution)
@@ -276,7 +284,20 @@ class DESAgent:
         else:
             self.no_improvement_attempt_count += 1
 
-        coalition_improved = (coal_f == float('inf')) or (new_f < coal_f)
+        # A complete result always beats an incomplete coalition_best.
+        # The fitness function has no penalty for missing tasks, so an incomplete
+        # solution can have artificially low fitness and block a complete one.
+        _coal_incomplete = (
+            num_uncovered > 0
+            and self.coalition_best_solution is not None
+            and len(self.coalition_best_solution[0]) < num_uncovered
+        )
+        _result_complete = (num_uncovered == 0 or len(result[0]) >= num_uncovered)
+        coalition_improved = (
+            (coal_f == float('inf'))
+            or (new_f < coal_f)
+            or (_coal_incomplete and _result_complete)
+        )
         if coalition_improved:
             self.coalition_best_solution = deepcopy(result)
             self.coalition_best_agent    = self.agent_id
@@ -476,8 +497,9 @@ class DESAgent:
         valid = [s for s in (self.population or []) if s and s[0]]
         if len(valid) <= 1:
             return None
+        expected_tasks = len(self.current_solution[0])
         try:
-            return OperatorFunctions.apply_op(
+            result = OperatorFunctions.apply_op(
                 operator,
                 self.current_solution,
                 valid,
@@ -485,6 +507,10 @@ class DESAgent:
                 list(self.problem.current_robot_cost_matrix),
                 self.problem.initial_robot_cost_matrix,
             )
+            # Discard any result that dropped tasks (operator bug defence)
+            if result is None or not result[0] or len(result[0]) < expected_tasks:
+                return None
+            return result
         except Exception:
             return None
 
