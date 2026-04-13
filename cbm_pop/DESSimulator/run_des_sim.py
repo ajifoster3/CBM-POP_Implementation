@@ -123,9 +123,14 @@ def main():
         summary = sim.run(progress_interval=args.progress_interval)
     except BaseException as exc:
         import traceback
+        import os
         print(f'\n[FATAL] {type(exc).__name__} raised in sim.run():', flush=True)
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
+        try:
+            os.fsync(sys.stdout.fileno())
+        except Exception:
+            pass
         if logger:
             try:
                 logger.close()
@@ -146,6 +151,12 @@ def main():
     print(f'  iterations    : {summary["iterations_per_agent"]}')
     print(f'  coalition fit : '
           f'{[f"{f:.3f}" for f in summary["coalition_fitness"]]}')
+    sys.stdout.flush()
+    try:
+        import os
+        os.fsync(sys.stdout.fileno())
+    except Exception:
+        pass
 
     sys.exit(0 if summary['complete'] else 1)
 
