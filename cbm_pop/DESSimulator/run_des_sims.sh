@@ -198,15 +198,23 @@ write_run_settings() {
 
 check_des_complete() {
   local _dir="$1"
-  local _csv="$_dir/coverage_log.csv"
-  [ -f "$_csv" ] || { echo "No coverage_log.csv in $_dir"; return 1; }
-  # Last data row: check coverage_fraction == 1.0000
-  local _last
-  _last=$(tail -n 1 "$_csv" | awk -F',' '{print $4}' | tr -d '[:space:]')
-  if [[ "$_last" == "1.0000" ]]; then
+  local _log="$_dir/des_sim.log"
+  # Primary check: trust Python's own exit report written to des_sim.log
+  if [ -f "$_log" ] && grep -q '\[DES_EXIT\] reason=complete' "$_log"; then
     return 0
   fi
-  echo "Coverage incomplete in $_csv (last fraction=${_last})"
+  # Fallback: read coverage_log.csv
+  local _csv="$_dir/coverage_log.csv"
+  if [ -f "$_csv" ]; then
+    local _last
+    _last=$(tail -n 1 "$_csv" | awk -F',' '{print $4}' | tr -d '[:space:]')
+    if [[ "$_last" == "1.0000" ]]; then
+      return 0
+    fi
+    echo "Coverage incomplete in $_csv (last fraction=${_last})"
+  else
+    echo "No coverage_log.csv in $_dir"
+  fi
   return 1
 }
 
