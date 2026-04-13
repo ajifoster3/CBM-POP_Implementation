@@ -121,14 +121,18 @@ def main():
     wall_start = time.monotonic()
     try:
         summary = sim.run(progress_interval=args.progress_interval)
-    except Exception:
+    except BaseException as exc:
         import traceback
-        print('\n[FATAL] Unhandled exception in sim.run():', flush=True)
+        print(f'\n[FATAL] {type(exc).__name__} raised in sim.run():', flush=True)
         traceback.print_exc(file=sys.stdout)
         sys.stdout.flush()
         if logger:
-            logger.close()
-        sys.exit(1)
+            try:
+                logger.close()
+            except Exception:
+                pass
+        code = exc.code if isinstance(exc, SystemExit) else 1
+        sys.exit(code if code is not None else 1)
     wall_time  = time.monotonic() - wall_start
 
     if logger:
