@@ -346,8 +346,9 @@ else
   START_RUN=1
   END_RUN=$NUM_RUNS
 
-  if ls -d "$PARAM_DIR"/run_* >/dev/null 2>&1; then
-    LAST_DIR=$(ls -d "$PARAM_DIR"/run_* 2>/dev/null | sort -V | tail -n 1)
+  if ls -d "$PARAM_DIR"/run_[0-9]* >/dev/null 2>&1; then
+    LAST_DIR=$(ls -d "$PARAM_DIR"/run_[0-9]* 2>/dev/null \
+               | grep -E '/run_[0-9]+$' | sort -V | tail -n 1)
     LAST_NUM=$(basename "$LAST_DIR" | sed 's/run_//')
     if check_des_complete "$LAST_DIR" 2>/dev/null; then
       START_RUN=$(( LAST_NUM + 1 ))
