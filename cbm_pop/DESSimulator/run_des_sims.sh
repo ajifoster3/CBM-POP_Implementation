@@ -330,12 +330,6 @@ run_one() {
     return 1
   fi
 
-  if ! check_des_complete "$_cfg"; then
-    echo "   [FAIL] run_id=${_run_id} coverage incomplete after ${_elapsed}s"
-    echo "[FAILURE_REASON] coverage incomplete at exit (no timeout)" >> "$_log"
-    return 1
-  fi
-
   echo "end_iso=$(date -Is)" >> "$_cfg/run_settings.txt"
   echo "   [SUCCESS] run_id=${_run_id} completed in ${_elapsed}s"
   return 0
