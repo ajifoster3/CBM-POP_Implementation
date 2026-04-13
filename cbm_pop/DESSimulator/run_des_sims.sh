@@ -384,7 +384,7 @@ while [ "$run" -le "$END_RUN" ]; do
       break
     fi
     # Preserve failed attempt logs for post-mortem inspection
-    local _failed_dir="$PARAM_DIR/run_${run}_failed_attempt_${attempt}"
+    _failed_dir="$PARAM_DIR/run_${run}_failed_attempt_${attempt}"
     rm -rf "$_failed_dir"
     if [ -d "$PARAM_DIR/run_${run}" ]; then
       mv "$PARAM_DIR/run_${run}" "$_failed_dir"
