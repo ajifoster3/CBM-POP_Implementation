@@ -111,10 +111,12 @@ class DESSimulation:
             self._reschedule_robot(robot.robot_id)
 
         # Main DES loop
+        exit_reason = 'queue_empty'
         while not self.queue.is_empty():
             event = self.queue.pop()
 
             if event.time > self.max_sim_time:
+                exit_reason = 'max_sim_time'
                 break
 
             self.sim_time = event.time
@@ -128,7 +130,15 @@ class DESSimulation:
                 self.logger.tick(self.sim_time, self.is_covered, self.agents)
 
             if all(self.is_covered):
+                exit_reason = 'complete'
                 break
+
+        covered   = sum(self.is_covered)
+        remaining = [t for t, c in enumerate(self.is_covered) if not c]
+        print(f'[DES_EXIT] reason={exit_reason}  sim_time={self.sim_time:.2f}'
+              f'  covered={covered}/{self.problem.num_tasks}'
+              f'  uncovered_tasks={remaining[:20]}{"..." if len(remaining) > 20 else ""}',
+              flush=True)
 
         return self._summary()
 
