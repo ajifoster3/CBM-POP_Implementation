@@ -116,9 +116,19 @@ def main():
     print(f'Problem: {args.problem_class}  size={args.problem_size}  '
           f'tasks={problem.num_tasks}  agents={args.num_agents}')
     print('Running DES...')
+    sys.stdout.flush()
 
     wall_start = time.monotonic()
-    summary    = sim.run(progress_interval=args.progress_interval)
+    try:
+        summary = sim.run(progress_interval=args.progress_interval)
+    except Exception:
+        import traceback
+        print('\n[FATAL] Unhandled exception in sim.run():', flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.stdout.flush()
+        if logger:
+            logger.close()
+        sys.exit(1)
     wall_time  = time.monotonic() - wall_start
 
     if logger:

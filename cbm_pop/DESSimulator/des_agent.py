@@ -521,6 +521,10 @@ class DESAgent:
                 return None
             return result
         except Exception:
+            import traceback
+            print(f'[WARN] agent={self.agent_id} operator={operator} raised an exception:',
+                  flush=True)
+            traceback.print_exc()
             return None
 
     def _reinsert_child(self, child: tuple) -> None:
