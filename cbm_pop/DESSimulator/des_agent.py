@@ -34,6 +34,7 @@ class LearningMethod(Enum):
     Q_LEARNING          = 'Q-Learning'
     Q_LEARNING_STEP     = 'Q-Learning-Step'
     Q_LEARNING_SEPARATE = 'Q-Learning-Separate'
+    Q_LEARNING_GAIN     = 'Q-Learning-improveoncurrent'   # step reward = improvement on current solution
     FERREIRA            = 'Ferreira_et_al.'
     UCB                 = 'UCB'
     UNIFORM             = 'Uniform'
@@ -68,7 +69,8 @@ class DESAgent:
         is_append_first_task:  bool  = True,
         is_inject_best_on_cycle: bool  = False,
         inject_best_prob:      float = 0.9,
-        is_free_weight_matrix: bool  = False,
+        is_free_weight_matrix:    bool  = False,
+        initialise_with_heuristic: bool = True,
         method:                str   = 'Q-Learning',
         ucb_c:                 float = 1.414,
         ucb_window:            int   = 200,
@@ -90,8 +92,9 @@ class DESAgent:
         self.rho                   = rho
         self.is_mimetism_enabled   = is_mimetism_enabled
         self.is_append_first_task  = is_append_first_task
-        self.is_inject_best_on_cycle = is_inject_best_on_cycle
-        self.inject_best_prob      = inject_best_prob
+        self.is_inject_best_on_cycle      = is_inject_best_on_cycle
+        self.inject_best_prob             = inject_best_prob
+        self.initialise_with_heuristic    = initialise_with_heuristic
 
         if is_knn_enabled:
             self.intensifiers = [
@@ -178,7 +181,7 @@ class DESAgent:
         self.problem.update_robot_cost_matrix(self.robot_poses)
         self.problem.initialize_robot_initial_pose_cost_matrix(self.initial_robot_poses)
 
-        self.population = self._generate_population_voronoi()
+        self.population = self._generate_population()
         self.current_parent_idx, self.current_solution = self._select_solution()
         self.coalition_best_solution = deepcopy(self.current_solution)
         self._assign_next_task(self.coalition_best_solution)
@@ -212,7 +215,7 @@ class DESAgent:
             and len(self.current_solution[0]) < num_uncovered
         )
         if not self.current_solution or not self.current_solution[0] or _sol_incomplete:
-            self.population = self._generate_population_voronoi()
+            self.population = self._generate_population()
             self.current_parent_idx, self.current_solution = self._select_solution()
 
         # Random restart on stagnation
@@ -266,7 +269,8 @@ class DESAgent:
         op_idx  = self._op_index(step.operator)
         self.previous_experience.append([step.condition, op_idx, gain])
 
-        step_improved_local = (loc_f == float('inf')) or (new_f < loc_f)
+        step_improved_local   = (loc_f == float('inf')) or (new_f < loc_f)
+        step_improved_current = gain < 0
 
         # Step-level learning
         if self.learning_method == LearningMethod.Q_LEARNING_STEP:
@@ -274,12 +278,15 @@ class DESAgent:
         elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE
               and step.operator in self.intensifiers):
             self._learning_step(step.condition, op_idx, step_improved_local)
+        elif self.learning_method == LearningMethod.Q_LEARNING_GAIN:
+            self._learning_step(step.condition, op_idx, step_improved_current)
         elif self.learning_method == LearningMethod.UCB:
             self.ucb_bandit.update(op_idx, -gain)
             self.ucb_bandit.N += 1
         if step_improved_local:
             self.local_best_solution  = deepcopy(result)
             self.best_local_improved  = True
+        if step_improved_current:
             self.no_improvement_attempt_count = 0
         else:
             self.no_improvement_attempt_count += 1
@@ -474,19 +481,78 @@ class DESAgent:
             if len(per_agent_routes[src]) <= 1:
                 donors.discard(src)
 
-    def _generate_population_voronoi(self) -> list:
+    def _generate_population(self) -> list:
+        """Dispatch to heuristic or random initialisation based on agent config."""
+        if self.initialise_with_heuristic:
+            return self._generate_population_voronoi()
+        return self._generate_population_random()
+
+    def _generate_population_random(self) -> list:
+        """Randomly assign and order uncovered tasks — no Voronoi bias."""
+        uncovered = [t for t, c in enumerate(self.is_covered) if not c]
         population = []
         for _ in range(self.pop_size):
-            tpa    = self._voronoi_partition()
-            routes = [
-                self._nn_order([t for t in tpa[a] if not self.is_covered[t]],
-                               self.robot_poses[a])
-                for a in range(self.num_agents)
-            ]
-            self._ensure_min_one(routes)
-            order = [t for r in routes for t in r]
-            alloc = [len(r) for r in routes]
+            tasks = uncovered[:]
+            random.shuffle(tasks)
+            assignment = [random.randrange(self.num_agents) for _ in tasks]
+            order, alloc = [], [0] * self.num_agents
+            for agent in range(self.num_agents):
+                agent_tasks = [t for t, a in zip(tasks, assignment) if a == agent]
+                order.extend(agent_tasks)
+                alloc[agent] = len(agent_tasks)
             population.append((order, alloc))
+        return population
+
+    def _perturb_solution(self, solution: tuple, num_swaps: int) -> tuple:
+        """Apply random intra- or inter-route moves to diversify a solution."""
+        order, alloc = list(solution[0]), list(solution[1])
+        for _ in range(num_swaps):
+            if random.random() < 0.5:
+                # Intra-route swap: swap two tasks within one agent's route
+                eligible = [a for a in range(self.num_agents) if alloc[a] >= 2]
+                if eligible:
+                    a     = random.choice(eligible)
+                    start = sum(alloc[:a])
+                    end   = start + alloc[a]
+                    i, j  = random.sample(range(start, end), 2)
+                    order[i], order[j] = order[j], order[i]
+            else:
+                # Inter-route move: relocate one task from a donor to a recipient
+                donors = [a for a in range(self.num_agents) if alloc[a] >= 1]
+                if len(donors) >= 1 and self.num_agents >= 2:
+                    src      = random.choice(donors)
+                    dst      = random.choice([a for a in range(self.num_agents) if a != src])
+                    src_start = sum(alloc[:src])
+                    src_end   = src_start + alloc[src]
+                    pick_idx  = random.randrange(src_start, src_end)
+                    task      = order.pop(pick_idx)
+                    alloc[src] -= 1
+                    dst_start = sum(alloc[:dst])
+                    dst_end   = dst_start + alloc[dst]
+                    order.insert(random.randint(dst_start, dst_end), task)
+                    alloc[dst] += 1
+        return (order, alloc)
+
+    def _generate_population_voronoi(self) -> list:
+        population = []
+        # Build the base Voronoi + nearest-neighbour solution once.
+        tpa    = self._voronoi_partition()
+        routes = [
+            self._nn_order([t for t in tpa[a] if not self.is_covered[t]],
+                           self.robot_poses[a])
+            for a in range(self.num_agents)
+        ]
+        self._ensure_min_one(routes)
+        base_order = [t for r in routes for t in r]
+        base_alloc = [len(r) for r in routes]
+        base = (base_order, base_alloc)
+
+        # First member is the clean heuristic solution; the rest are perturbed clones.
+        population.append(base)
+        num_tasks = len(base_order)
+        for i in range(1, self.pop_size):
+            num_swaps = random.randint(1, max(1, num_tasks // 4))
+            population.append(self._perturb_solution(base, num_swaps))
         return population
 
     def _select_solution(self) -> Tuple[Optional[int], Optional[tuple]]:
@@ -608,13 +674,18 @@ class DESAgent:
     # ------------------------------------------------------------------ #
 
     def _best_episode_cutoff(self) -> int:
-        """Index up to which experience is considered (cumulative gain minimum)."""
+        """Index up to which experience is considered (cumulative gain minimum).
+
+        Returns the index *after* the step that achieved the best cumulative
+        gain, so that step is included in the weight update (range(cutoff) is
+        exclusive of cutoff, hence +1).
+        """
         cumulative, total = [], 0.0
         for _, _, gain in self.previous_experience:
             total += gain
             cumulative.append(total)
         if self.best_local_improved and cumulative:
-            return cumulative.index(min(cumulative))
+            return cumulative.index(min(cumulative)) + 1
         return len(self.previous_experience)
 
     def _learning_step(self, condition: int, op_idx: int, improved: bool) -> None:
@@ -669,7 +740,7 @@ class DESAgent:
             self._learning_qlearning(diversifiers_only=True)
         elif self.learning_method == LearningMethod.FERREIRA:
             self._learning_ferreira()
-        # Q_LEARNING_STEP, UCB, UNIFORM: no cycle-end weight update
+        # Q_LEARNING_STEP, Q_LEARNING_GAIN, UCB, UNIFORM: no cycle-end weight update
 
         _mimetism_applicable = self.learning_method not in (
             LearningMethod.UCB, LearningMethod.UNIFORM

@@ -152,6 +152,15 @@ class DESSimulation:
         agent  = self.agents[agent_id]
         poses  = [r.get_position(self.sim_time) for r in self.robots]
 
+        # Bring the agent's robot cost matrix up to the current sim time (when the
+        # operator completed) before evaluating the result.  Without this, fitness
+        # is assessed against positions from when the operator *started*, not when
+        # it *finished*.
+        for i, pos in enumerate(poses):
+            if pos is not None:
+                agent.robot_poses[i] = pos
+        agent.problem.update_robot_cost_matrix(agent.robot_poses)
+
         coalition_improved = agent.apply_step_result(step, self.sim_time)
 
         if coalition_improved:

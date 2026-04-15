@@ -23,8 +23,8 @@ def parse_args():
     p = argparse.ArgumentParser(description='CBM-POP Discrete Event Simulation')
 
     # Problem
-    p.add_argument('--num_agents',    type=int,   default=5)
-    p.add_argument('--problem_size',  type=int,   default=10)
+    p.add_argument('--num_agents',    type=int,   default=100)
+    p.add_argument('--problem_size',  type=int,   default=40)
     p.add_argument('--problem_class', type=str,   default='Simple_Grid')
     p.add_argument('--problem_seed',  type=int,   default=1)
     p.add_argument('--speed',         type=float, default=1.0,
@@ -35,7 +35,7 @@ def parse_args():
     # Agent
     p.add_argument('--method',             type=str,   default='Q-Learning',
                    choices=['Q-Learning', 'Q-Learning-Step', 'Q-Learning-Separate',
-                            'Ferreira_et_al.', 'UCB', 'Uniform'])
+                            'Q-Learning-improveoncurrent', 'Ferreira_et_al.', 'UCB', 'Uniform'])
     p.add_argument('--pop_size',           type=int,   default=10)
     p.add_argument('--di_cycle_length',    type=int,   default=10)
     p.add_argument('--num_solution_attempts', type=int, default=21)
@@ -52,6 +52,8 @@ def parse_args():
                    help='UCB sliding window size')
     p.add_argument('--is_free_weight_matrix', action='store_true',
                    help='Use free (all-ones) weight matrix instead of classical')
+    p.add_argument('--random_init', action='store_true',
+                   help='Initialise population randomly instead of with Voronoi heuristic')
     p.add_argument('--is_knn_enabled',     action='store_true')
     p.add_argument('--no_mimetism',        action='store_true')
     p.add_argument('--inject_best',        action='store_true')
@@ -92,6 +94,7 @@ def main():
         ucb_c=args.ucb_c,
         ucb_window=args.ucb_window,
         is_free_weight_matrix=args.is_free_weight_matrix,
+        initialise_with_heuristic=not args.random_init,
         is_knn_enabled=args.is_knn_enabled,
         is_mimetism_enabled=not args.no_mimetism,
         is_inject_best_on_cycle=args.inject_best,
