@@ -32,19 +32,21 @@ from cbm_pop.SimpleSimulator.simple_problem import SimpleProblem
 class DESSimulation:
     def __init__(
         self,
-        problem:      SimpleProblem,
-        num_agents:   int,
-        robot_speed:  float = 1.0,
-        seed:         int   = 1,
-        agent_kwargs: Optional[dict] = None,
-        max_sim_time: float = float('inf'),
+        problem:            SimpleProblem,
+        num_agents:         int,
+        robot_speed:        float = 1.0,
+        seed:               int   = 1,
+        agent_kwargs:       Optional[dict] = None,
+        max_sim_time:       float = float('inf'),
+        compute_time_scale: float = 1.0,
         logger=None,
     ):
-        self.problem      = problem
-        self.num_agents   = num_agents
-        self.sim_time     = 0.0
-        self.max_sim_time = max_sim_time
-        self.logger       = logger
+        self.problem            = problem
+        self.num_agents         = num_agents
+        self.sim_time           = 0.0
+        self.max_sim_time       = max_sim_time
+        self.compute_time_scale = compute_time_scale
+        self.logger             = logger
 
         self.queue           = EventQueue()
         self.is_covered      = [False] * problem.num_tasks
@@ -101,7 +103,7 @@ class DESSimulation:
             poses = [r.get_position(0.0) for r in self.robots]
             step  = agent.compute_step(poses)
             self.queue.push(
-                step.wall_time,
+                step.wall_time * self.compute_time_scale,
                 EventType.OPERATOR_COMPLETE,
                 {'agent_id': agent.agent_id, 'step': step},
             )
@@ -183,7 +185,7 @@ class DESSimulation:
         # Schedule next step for this agent
         next_step = agent.compute_step(poses)
         self.queue.push(
-            self.sim_time + next_step.wall_time,
+            self.sim_time + next_step.wall_time * self.compute_time_scale,
             EventType.OPERATOR_COMPLETE,
             {'agent_id': agent_id, 'step': next_step},
         )

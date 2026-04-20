@@ -56,7 +56,7 @@ method:,speed:,max-sim-time:,pop-size:,di-cycle-length:,num-solution-attempts:,\
 lr:,gamma-decay:,positive-reward:,negative-reward:,rho:,eta:,\
 ucb-c:,ucb-window:,is-free-weight-matrix:,\
 is-knn-enabled:,is-mimetism-enabled:,is-inject-best-on-cycle:,inject-best-prob:,\
-is-append-first-task:,random-init:,\
+is-append-first-task:,random-init:,compute-time-scale:,\
 progress-interval:,output-root: \
   -- "$@") || { echo "Invalid options"; exit 1; }
 eval set -- "$PARSED"
@@ -90,6 +90,7 @@ while true; do
     --inject-best-prob)           INJECT_BEST_PROB="$2";        shift 2 ;;
     --is-append-first-task)       IS_APPEND_FIRST_TASK="$2";    shift 2 ;;
     --random-init)                RANDOM_INIT="$2";             shift 2 ;;
+    --compute-time-scale)         COMPUTE_TIME_SCALE="$2";      shift 2 ;;
     --progress-interval)          PROGRESS_INTERVAL="$2";       shift 2 ;;
     --output-root)                RESULTS_ROOT="$2";            shift 2 ;;
     --) shift; break ;;
@@ -125,10 +126,11 @@ IS_INJECT_BEST_ON_CYCLE=${IS_INJECT_BEST_ON_CYCLE:-"false"}
 INJECT_BEST_PROB=${INJECT_BEST_PROB:-0.9}
 IS_APPEND_FIRST_TASK=${IS_APPEND_FIRST_TASK:-"true"}
 RANDOM_INIT=${RANDOM_INIT:-"false"}
+COMPUTE_TIME_SCALE=${COMPUTE_TIME_SCALE:-1.0}
 PROGRESS_INTERVAL=${PROGRESS_INTERVAL:-0}
 
 # ===== Directory layout =====
-PARAM_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}"
+PARAM_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}_ctscale_${COMPUTE_TIME_SCALE}"
 mkdir -p "$PARAM_DIR"
 
 # ===== Helpers =====
@@ -161,6 +163,7 @@ write_param_tag() {
     echo "inject_best_prob=${INJECT_BEST_PROB}"
     echo "is_append_first_task=${IS_APPEND_FIRST_TASK}"
     echo "random_init=${RANDOM_INIT}"
+    echo "compute_time_scale=${COMPUTE_TIME_SCALE}"
     echo "created_iso=$(date -Is)"
   } > "$_dir/setting_tag.txt"
 }
@@ -194,6 +197,7 @@ write_run_settings() {
     echo "inject_best_prob=${INJECT_BEST_PROB}"
     echo "is_append_first_task=${IS_APPEND_FIRST_TASK}"
     echo "random_init=${RANDOM_INIT}"
+    echo "compute_time_scale=${COMPUTE_TIME_SCALE}"
     echo "timeout_seconds=${TIMEOUT_SECONDS}"
     echo "run_uid=${_uid}"
     echo "start_iso=$(date -Is)"
@@ -253,6 +257,7 @@ build_des_cmd() {
   [[ "$IS_INJECT_BEST_ON_CYCLE" == "true" ]] && CMD+=( --inject_best )
   [[ "$IS_APPEND_FIRST_TASK"  == "false" ]] && CMD+=( --no_append_first_task )
   [[ "$RANDOM_INIT"           == "true"  ]] && CMD+=( --random_init )
+  [[ "$COMPUTE_TIME_SCALE"   != "1.0"   ]] && CMD+=( --compute_time_scale "$COMPUTE_TIME_SCALE" )
   [[ "$PROGRESS_INTERVAL"    != "0"     ]] && CMD+=( --progress_interval "$PROGRESS_INTERVAL" )
   echo "${CMD[@]}"
 }
@@ -380,7 +385,7 @@ run=$START_RUN
 while [ "$run" -le "$END_RUN" ]; do
   RUN_SEED="${PROBLEM_SEED:-$(gen_seed)}"
   echo "============================="
-  echo "[INFO] Run ${run}/${END_RUN} | agents=${NUM_AGENTS} size=${PROBLEM_SIZE} class=${PROBLEM_CLASS} seed=${RUN_SEED} method=${METHOD} speed=${SPEED} max_sim_time=${MAX_SIM_TIME} pop_size=${POP_SIZE} di_cycle=${DI_CYCLE_LENGTH} solution_attempts=${NUM_SOLUTION_ATTEMPTS} lr=${LR} gamma=${GAMMA_DECAY} pos_reward=${POSITIVE_REWARD} neg_reward=${NEGATIVE_REWARD} rho=${RHO} eta=${ETA} ucb_c=${UCB_C} ucb_window=${UCB_WINDOW} free_wm=${IS_FREE_WEIGHT_MATRIX} knn=${IS_KNN_ENABLED} mimetism=${IS_MIMETISM_ENABLED} inject_best=${IS_INJECT_BEST_ON_CYCLE} inject_prob=${INJECT_BEST_PROB} append_first=${IS_APPEND_FIRST_TASK} random_init=${RANDOM_INIT}"
+  echo "[INFO] Run ${run}/${END_RUN} | agents=${NUM_AGENTS} size=${PROBLEM_SIZE} class=${PROBLEM_CLASS} seed=${RUN_SEED} method=${METHOD} speed=${SPEED} max_sim_time=${MAX_SIM_TIME} pop_size=${POP_SIZE} di_cycle=${DI_CYCLE_LENGTH} solution_attempts=${NUM_SOLUTION_ATTEMPTS} lr=${LR} gamma=${GAMMA_DECAY} pos_reward=${POSITIVE_REWARD} neg_reward=${NEGATIVE_REWARD} rho=${RHO} eta=${ETA} ucb_c=${UCB_C} ucb_window=${UCB_WINDOW} free_wm=${IS_FREE_WEIGHT_MATRIX} knn=${IS_KNN_ENABLED} mimetism=${IS_MIMETISM_ENABLED} inject_best=${IS_INJECT_BEST_ON_CYCLE} inject_prob=${INJECT_BEST_PROB} append_first=${IS_APPEND_FIRST_TASK} random_init=${RANDOM_INIT} compute_time_scale=${COMPUTE_TIME_SCALE}"
   echo "============================="
 
   attempt=0

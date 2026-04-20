@@ -31,6 +31,9 @@ def parse_args():
                    help='Robot speed (grid units / sim-second)')
     p.add_argument('--max_sim_time',  type=float, default=float('inf'),
                    help='Hard cap on sim time (default: unlimited)')
+    p.add_argument('--compute_time_scale', type=float, default=1.0,
+                   help='Multiplier applied to measured operator wall time before '
+                        'advancing sim time (default: 1.0 = real measured time)')
 
     # Agent
     p.add_argument('--method',             type=str,   default='Q-Learning',
@@ -113,6 +116,7 @@ def main():
         seed=args.problem_seed,
         agent_kwargs=agent_kwargs,
         max_sim_time=args.max_sim_time,
+        compute_time_scale=args.compute_time_scale,
         logger=logger,
     )
 
