@@ -1,3 +1,4 @@
+import random
 from collections import deque
 import numpy as np
 
@@ -13,7 +14,7 @@ class UCBBandit:
     def select(self) -> int:
         untried = [i for i, h in enumerate(self._history) if len(h) == 0]
         if untried:
-            return untried[0]
+            return random.choice(untried)
 
         means = np.array([np.mean(h) for h in self._history])
         counts = np.array([len(h) for h in self._history])

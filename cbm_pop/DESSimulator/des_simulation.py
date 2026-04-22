@@ -171,16 +171,51 @@ class DESSimulation:
                 if agent.is_mimetism_enabled
                 else None
             )
+            secondary_improvers = []
             for other in self.agents:
                 if other.agent_id != agent_id:
-                    other.receive_coalition_best(
+                    _, prepend_adopted = other.receive_coalition_best(
                         agent.coalition_best_solution, agent_id, weights
                     )
+                    if prepend_adopted:
+                        secondary_improvers.append(other)
                     # Re-route if the new coalition assigned this robot a task
                     # and it is currently idle (no pending arrival event).
                     self._reschedule_robot(other.agent_id)
             # Re-route this agent's robot if its assigned task changed
             self._reschedule_robot(agent_id)
+
+            # Propagate prepend-first-task improvements (mirrors SimpleSimulator
+            # publish behaviour: if an agent improved the received solution by
+            # prepending its current task, re-broadcast that version to peers).
+            # Each round picks the single best solution among all improvers and
+            # broadcasts it, avoiding ordering bias from sequential iteration.
+            # Cascades until no further prepend improvement is found — safe
+            # because each round strictly decreases fitness over a finite set.
+            current_improvers = secondary_improvers
+            while current_improvers:
+                best_improver = min(
+                    current_improvers,
+                    key=lambda a: a._fitness(a.coalition_best_solution),
+                )
+                imp_weights = (
+                    best_improver.weight_matrix.weights
+                    if best_improver.is_mimetism_enabled
+                    else None
+                )
+                next_improvers = []
+                for other in self.agents:
+                    if other.agent_id != best_improver.agent_id:
+                        _, prepend_adopted = other.receive_coalition_best(
+                            best_improver.coalition_best_solution,
+                            best_improver.agent_id,
+                            imp_weights,
+                        )
+                        if prepend_adopted:
+                            next_improvers.append(other)
+                        self._reschedule_robot(other.agent_id)
+                self._reschedule_robot(best_improver.agent_id)
+                current_improvers = next_improvers
 
         # Schedule next step for this agent
         next_step = agent.compute_step(poses)

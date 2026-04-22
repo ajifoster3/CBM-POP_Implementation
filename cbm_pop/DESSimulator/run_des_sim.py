@@ -23,8 +23,8 @@ def parse_args():
     p = argparse.ArgumentParser(description='CBM-POP Discrete Event Simulation')
 
     # Problem
-    p.add_argument('--num_agents',    type=int,   default=100)
-    p.add_argument('--problem_size',  type=int,   default=40)
+    p.add_argument('--num_agents',    type=int,   default=10)
+    p.add_argument('--problem_size',  type=int,   default=20)
     p.add_argument('--problem_class', type=str,   default='Simple_Grid')
     p.add_argument('--problem_seed',  type=int,   default=1)
     p.add_argument('--speed',         type=float, default=1.0,
@@ -36,7 +36,7 @@ def parse_args():
                         'advancing sim time (default: 1.0 = real measured time)')
 
     # Agent
-    p.add_argument('--method',             type=str,   default='Q-Learning',
+    p.add_argument('--method',             type=str,   default='UCB',
                    choices=['Q-Learning', 'Q-Learning-Step', 'Q-Learning-Separate',
                             'Q-Learning-improveoncurrent', 'Ferreira_et_al.', 'UCB', 'Uniform'])
     p.add_argument('--pop_size',           type=int,   default=10)
@@ -57,16 +57,16 @@ def parse_args():
                    help='Use free (all-ones) weight matrix instead of classical')
     p.add_argument('--random_init', action='store_true',
                    help='Initialise population randomly instead of with Voronoi heuristic')
-    p.add_argument('--is_knn_enabled',     action='store_true')
+    p.add_argument('--is_knn_enabled',     action='store_true', default=True)
     p.add_argument('--no_mimetism',        action='store_true')
-    p.add_argument('--inject_best',        action='store_true')
+    p.add_argument('--inject_best',        action='store_true', default=True)
     p.add_argument('--inject_best_prob',   type=float, default=0.9)
     p.add_argument('--no_append_first_task', action='store_true',
                    help='Disable prepending current task when receiving coalition best')
 
     # Output
-    p.add_argument('--output_dir', type=str, default=None,
-                   help='Directory for CSV logs (default: no logging)')
+    p.add_argument('--output_dir', type=str, default="output/logs",
+                   help='Directory for CSV logs (default: log/des_sim/)')
     p.add_argument('--progress_interval', type=float, default=0.0,
                    help='Print a progress line every this many sim-time units (0 = off)')
 

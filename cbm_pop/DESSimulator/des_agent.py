@@ -282,7 +282,6 @@ class DESAgent:
             self._learning_step(step.condition, op_idx, step_improved_current)
         elif self.learning_method == LearningMethod.UCB:
             self.ucb_bandit.update(op_idx, -gain)
-            self.ucb_bandit.N += 1
         if step_improved_local:
             self.local_best_solution  = deepcopy(result)
             self.best_local_improved  = True
@@ -325,22 +324,29 @@ class DESAgent:
         solution,
         sender_id: int,
         sender_weights: Optional[list] = None,
-    ) -> bool:
+    ) -> tuple:
         """
         Ingest a coalition-best from a peer.
-        Returns True if this improved our coalition best.
+        Returns (coalition_improved, prepend_adopted) where:
+          coalition_improved — True if our coalition best was updated.
+          prepend_adopted    — True if the prepend-first-task modification was
+                               responsible for making the candidate strictly
+                               better than the received solution (and should
+                               therefore be re-broadcast to peers).
         """
         if solution is None:
-            return False
+            return False, False
 
         candidate = self._remove_covered(deepcopy(solution))
         if not candidate or not candidate[0]:
-            return False
+            return False, False
 
+        prepend_adopted = False
         if self.is_append_first_task and self.current_task is not None:
             modified = self._prepend_current_task(candidate)
             if modified is not None and self._fitness(modified) < self._fitness(candidate):
                 candidate = modified
+                prepend_adopted = True
 
         num_uncovered = sum(1 for c in self.is_covered if not c)
         _coal_incomplete = (
@@ -357,11 +363,11 @@ class DESAgent:
             self._assign_next_task(candidate)
             if sender_weights is not None:
                 self.received_weight_matrices.append(sender_weights)
-            return True
+            return True, prepend_adopted
 
         if sender_weights is not None:
             self.received_weight_matrices.append(sender_weights)
-        return False
+        return False, False
 
     def handle_task_covered(self, task_id: int) -> None:
         """React to a coverage event from any robot."""
@@ -764,6 +770,7 @@ class DESAgent:
                 worst = max(range(len(self.population)),
                             key=lambda k: self._fitness(self.population[k]))
                 self.population[worst] = deepcopy(self.coalition_best_solution)
+                self.current_solution = deepcopy(self.coalition_best_solution)
 
         if self._logger is not None:
             op_list = self.intensifiers + self.diversifiers
