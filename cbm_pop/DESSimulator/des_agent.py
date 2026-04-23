@@ -74,6 +74,8 @@ class DESAgent:
         method:                str   = 'Q-Learning',
         ucb_c:                 float = 1.414,
         ucb_window:            int   = 200,
+        time_discount:         bool  = False,
+        time_discount_lambda:  float = 0.1,
         logger=None,
     ):
         self.agent_id   = agent_id
@@ -132,6 +134,9 @@ class DESAgent:
             if self.learning_method == LearningMethod.UCB
             else None
         )
+
+        self.time_discount        = time_discount
+        self.time_discount_lambda = time_discount_lambda
 
         # Solution state
         self.population:              Optional[list]          = None
@@ -274,14 +279,14 @@ class DESAgent:
 
         # Step-level learning
         if self.learning_method == LearningMethod.Q_LEARNING_STEP:
-            self._learning_step(step.condition, op_idx, step_improved_local)
+            self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
         elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE
               and step.operator in self.intensifiers):
-            self._learning_step(step.condition, op_idx, step_improved_local)
+            self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_GAIN:
-            self._learning_step(step.condition, op_idx, step_improved_current)
+            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif self.learning_method == LearningMethod.UCB:
-            self.ucb_bandit.update(op_idx, -gain)
+            self.ucb_bandit.update(op_idx, self._apply_time_discount(-gain, gain, step.wall_time))
         if step_improved_local:
             self.local_best_solution  = deepcopy(result)
             self.best_local_improved  = True
@@ -694,11 +699,27 @@ class DESAgent:
             return cumulative.index(min(cumulative)) + 1
         return len(self.previous_experience)
 
-    def _learning_step(self, condition: int, op_idx: int, improved: bool) -> None:
+    def _apply_time_discount(self, reward: float, gain: float, wall_time: float) -> float:
+        """
+        Scale reward by a time-discount factor:
+            reward * (1 + λ·t)^sign(gain)
+        Improvements (gain < 0, reward > 0) are diminished for slow operators.
+        Degradations (gain > 0, reward < 0) are amplified for slow operators.
+        """
+        if not self.time_discount or wall_time <= 0.0:
+            return reward
+        factor = 1.0 + self.time_discount_lambda * wall_time
+        if gain < 0:
+            return reward / factor
+        return reward * factor
+
+    def _learning_step(self, condition: int, op_idx: int, improved: bool,
+                       gain: float = 0.0, wall_time: float = 0.0) -> None:
         """Per-step Q-learning update (used by Q_LEARNING_STEP and Q_LEARNING_SEPARATE)."""
         q        = self.weight_matrix.weights[condition][op_idx]
         max_next = max(self.weight_matrix.weights[condition])
         reward   = self.positive_reward if improved else self.negative_reward
+        reward   = self._apply_time_discount(reward, gain, wall_time)
         q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
         self.weight_matrix.weights[condition][op_idx] = max(q_new, 1e-6)
 

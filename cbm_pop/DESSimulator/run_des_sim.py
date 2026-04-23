@@ -53,6 +53,10 @@ def parse_args():
                    help='UCB exploration constant')
     p.add_argument('--ucb_window',         type=int,   default=200,
                    help='UCB sliding window size')
+    p.add_argument('--time_discount',      action='store_true',
+                   help='Enable time-discounted rewards')
+    p.add_argument('--time_discount_lambda', type=float, default=0.1,
+                   help='Time discount strength λ (default: 0.1)')
     p.add_argument('--is_free_weight_matrix', action='store_true',
                    help='Use free (all-ones) weight matrix instead of classical')
     p.add_argument('--random_init', action='store_true',
@@ -96,6 +100,8 @@ def main():
         eta=args.eta,
         ucb_c=args.ucb_c,
         ucb_window=args.ucb_window,
+        time_discount=args.time_discount,
+        time_discount_lambda=args.time_discount_lambda,
         is_free_weight_matrix=args.is_free_weight_matrix,
         initialise_with_heuristic=not args.random_init,
         is_knn_enabled=args.is_knn_enabled,

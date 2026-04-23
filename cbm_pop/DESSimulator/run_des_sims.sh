@@ -54,7 +54,7 @@ PARSED=$(getopt \
   -l problem-size:,agents:,problem-class:,problem-seed:,run-id:,num-runs:,\
 method:,speed:,max-sim-time:,pop-size:,di-cycle-length:,num-solution-attempts:,\
 lr:,gamma-decay:,positive-reward:,negative-reward:,rho:,eta:,\
-ucb-c:,ucb-window:,is-free-weight-matrix:,\
+ucb-c:,ucb-window:,time-discount:,time-discount-lambda:,is-free-weight-matrix:,\
 is-knn-enabled:,is-mimetism-enabled:,is-inject-best-on-cycle:,inject-best-prob:,\
 is-append-first-task:,random-init:,compute-time-scale:,\
 progress-interval:,output-root: \
@@ -83,6 +83,8 @@ while true; do
     --eta)                        ETA="$2";                     shift 2 ;;
     --ucb-c)                      UCB_C="$2";                   shift 2 ;;
     --ucb-window)                 UCB_WINDOW="$2";              shift 2 ;;
+    --time-discount)              TIME_DISCOUNT="$2";           shift 2 ;;
+    --time-discount-lambda)       TIME_DISCOUNT_LAMBDA="$2";    shift 2 ;;
     --is-free-weight-matrix)      IS_FREE_WEIGHT_MATRIX="$2";   shift 2 ;;
     --is-knn-enabled)             IS_KNN_ENABLED="$2";          shift 2 ;;
     --is-mimetism-enabled)        IS_MIMETISM_ENABLED="$2";     shift 2 ;;
@@ -119,6 +121,8 @@ METHOD=${METHOD:-"Q-Learning"}
 ETA=${ETA:-0.1}
 UCB_C=${UCB_C:-1.414}
 UCB_WINDOW=${UCB_WINDOW:-200}
+TIME_DISCOUNT=${TIME_DISCOUNT:-"false"}
+TIME_DISCOUNT_LAMBDA=${TIME_DISCOUNT_LAMBDA:-0.1}
 IS_FREE_WEIGHT_MATRIX=${IS_FREE_WEIGHT_MATRIX:-"false"}
 IS_KNN_ENABLED=${IS_KNN_ENABLED:-"false"}
 IS_MIMETISM_ENABLED=${IS_MIMETISM_ENABLED:-"true"}
@@ -130,7 +134,7 @@ COMPUTE_TIME_SCALE=${COMPUTE_TIME_SCALE:-1.0}
 PROGRESS_INTERVAL=${PROGRESS_INTERVAL:-0}
 
 # ===== Directory layout =====
-PARAM_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}_ctscale_${COMPUTE_TIME_SCALE}"
+PARAM_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}_ctscale_${COMPUTE_TIME_SCALE}_tdiscount_${TIME_DISCOUNT}_tdlambda_${TIME_DISCOUNT_LAMBDA}"
 mkdir -p "$PARAM_DIR"
 
 # ===== Helpers =====
@@ -156,6 +160,8 @@ write_param_tag() {
     echo "eta=${ETA}"
     echo "ucb_c=${UCB_C}"
     echo "ucb_window=${UCB_WINDOW}"
+    echo "time_discount=${TIME_DISCOUNT}"
+    echo "time_discount_lambda=${TIME_DISCOUNT_LAMBDA}"
     echo "is_free_weight_matrix=${IS_FREE_WEIGHT_MATRIX}"
     echo "is_knn_enabled=${IS_KNN_ENABLED}"
     echo "is_mimetism_enabled=${IS_MIMETISM_ENABLED}"
@@ -190,6 +196,8 @@ write_run_settings() {
     echo "eta=${ETA}"
     echo "ucb_c=${UCB_C}"
     echo "ucb_window=${UCB_WINDOW}"
+    echo "time_discount=${TIME_DISCOUNT}"
+    echo "time_discount_lambda=${TIME_DISCOUNT_LAMBDA}"
     echo "is_free_weight_matrix=${IS_FREE_WEIGHT_MATRIX}"
     echo "is_knn_enabled=${IS_KNN_ENABLED}"
     echo "is_mimetism_enabled=${IS_MIMETISM_ENABLED}"
@@ -258,6 +266,8 @@ build_des_cmd() {
   [[ "$IS_APPEND_FIRST_TASK"  == "false" ]] && CMD+=( --no_append_first_task )
   [[ "$RANDOM_INIT"           == "true"  ]] && CMD+=( --random_init )
   [[ "$COMPUTE_TIME_SCALE"   != "1.0"   ]] && CMD+=( --compute_time_scale "$COMPUTE_TIME_SCALE" )
+  [[ "$TIME_DISCOUNT"        == "true"  ]] && CMD+=( --time_discount )
+  [[ "$TIME_DISCOUNT"        == "true"  ]] && CMD+=( --time_discount_lambda "$TIME_DISCOUNT_LAMBDA" )
   [[ "$PROGRESS_INTERVAL"    != "0"     ]] && CMD+=( --progress_interval "$PROGRESS_INTERVAL" )
   echo "${CMD[@]}"
 }
