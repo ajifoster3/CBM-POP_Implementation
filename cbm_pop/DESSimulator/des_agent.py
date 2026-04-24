@@ -47,6 +47,7 @@ class StepData:
     operator:  Operator
     condition: int
     wall_time: float          # measured operator wall time (seconds)
+    robot_cost_matrix_snapshot: Optional[list] = None  # robot positions at compute time
 
 
 class DESAgent:
@@ -239,12 +240,18 @@ class DESAgent:
                 self.weight_matrix.weights, condition, enabled
             )
 
+        snapshot = (
+            [list(row) for row in self.problem.current_robot_cost_matrix]
+            if self.problem.current_robot_cost_matrix is not None else None
+        )
+
         t0        = _wall.process_time()
         result    = self._apply_operator(operator)
         wall_time = max(_wall.process_time() - t0, 1e-9)
 
         return StepData(result=result, operator=operator,
-                        condition=condition, wall_time=wall_time)
+                        condition=condition, wall_time=wall_time,
+                        robot_cost_matrix_snapshot=snapshot)
 
     def apply_step_result(self, step: StepData, sim_time: float = 0.0) -> bool:
         """
@@ -265,8 +272,9 @@ class DESAgent:
             return False
 
         num_uncovered = sum(1 for c in self.is_covered if not c)
-        new_f  = self._fitness(result)
-        cur_f  = self._fitness(self.current_solution)
+        snap = step.robot_cost_matrix_snapshot
+        new_f  = self._fitness(result, snap)
+        cur_f  = self._fitness(self.current_solution, snap)
         loc_f  = self._fitness(self.local_best_solution)
         coal_f = self._fitness(self.coalition_best_solution)
 
@@ -319,10 +327,11 @@ class DESAgent:
         self._reinsert_child(result)
         self.di_cycle_count += 1
 
+        weights_to_share = None
         if self.di_cycle_count >= self.di_cycle_length:
-            self._finish_di_cycle()
+            weights_to_share = self._finish_di_cycle()
 
-        return coalition_improved
+        return coalition_improved, weights_to_share
 
     def receive_coalition_best(
         self,
@@ -615,10 +624,17 @@ class DESAgent:
         except (IndexError, Exception):
             pass
 
-    def _fitness(self, sol) -> float:
+    def _fitness(self, sol, robot_cost_matrix_snapshot=None) -> float:
         if sol is None or self.problem.current_robot_cost_matrix is None:
             return float('inf')
         try:
+            if robot_cost_matrix_snapshot is not None:
+                original = self.problem.current_robot_cost_matrix
+                self.problem.current_robot_cost_matrix = robot_cost_matrix_snapshot
+                try:
+                    return SimpleFitness.fitness_function_robot_pose(sol, self.problem)
+                finally:
+                    self.problem.current_robot_cost_matrix = original
             return SimpleFitness.fitness_function_robot_pose(sol, self.problem)
         except Exception:
             return float('inf')
@@ -792,6 +808,8 @@ class DESAgent:
                             key=lambda k: self._fitness(self.population[k]))
                 self.population[worst] = deepcopy(self.coalition_best_solution)
                 self.current_solution = deepcopy(self.coalition_best_solution)
+                self.current_parent_idx = worst
+                self.no_improvement_attempt_count = 0
 
         if self._logger is not None:
             op_list = self.intensifiers + self.diversifiers

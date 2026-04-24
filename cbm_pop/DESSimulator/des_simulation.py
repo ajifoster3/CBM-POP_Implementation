@@ -163,14 +163,20 @@ class DESSimulation:
                 agent.robot_poses[i] = pos
         agent.problem.update_robot_cost_matrix(agent.robot_poses)
 
-        coalition_improved = agent.apply_step_result(step, self.sim_time)
+        coalition_improved, weights_to_share = agent.apply_step_result(step, self.sim_time)
 
         if coalition_improved:
-            weights = (
-                agent.weight_matrix.weights
-                if agent.is_mimetism_enabled
-                else None
-            )
+            # Use the post-learning deepcopy from _finish_di_cycle when available;
+            # otherwise snapshot current weights so receivers always blend with a
+            # fixed copy, never a live reference that drifts over time.
+            if agent.is_mimetism_enabled:
+                weights = (
+                    weights_to_share
+                    if weights_to_share is not None
+                    else deepcopy(agent.weight_matrix.weights)
+                )
+            else:
+                weights = None
             secondary_improvers = []
             for other in self.agents:
                 if other.agent_id != agent_id:
@@ -199,7 +205,7 @@ class DESSimulation:
                     key=lambda a: a._fitness(a.coalition_best_solution),
                 )
                 imp_weights = (
-                    best_improver.weight_matrix.weights
+                    deepcopy(best_improver.weight_matrix.weights)
                     if best_improver.is_mimetism_enabled
                     else None
                 )
