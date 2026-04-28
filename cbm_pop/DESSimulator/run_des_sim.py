@@ -68,10 +68,22 @@ def parse_args():
     p.add_argument('--no_append_first_task', action='store_true',
                    help='Disable prepending current task when receiving coalition best')
 
+    # Kill / Revive
+    p.add_argument('--enable_kill',      action='store_true',
+                   help='Kill the highest-numbered robot(s) at kill_threshold coverage')
+    p.add_argument('--kill_threshold',   type=float, default=0.2,
+                   help='Coverage fraction at which kill is triggered (default: 0.2)')
+    p.add_argument('--num_to_kill',      type=int,   default=1,
+                   help='Number of robots to kill (default: 1)')
+    p.add_argument('--enable_revive',    action='store_true',
+                   help='Revive killed robots at revive_threshold coverage')
+    p.add_argument('--revive_threshold', type=float, default=0.8,
+                   help='Coverage fraction at which revive is triggered (default: 0.8)')
+
     # Output
-    p.add_argument('--output_dir', type=str, default="output/logs",
+    p.add_argument('--output_dir', type=str, default="log/des_sim/",
                    help='Directory for CSV logs (default: log/des_sim/)')
-    p.add_argument('--progress_interval', type=float, default=0.0,
+    p.add_argument('--progress_interval', type=float, default=0.5,
                    help='Print a progress line every this many sim-time units (0 = off)')
 
     return p.parse_args()
@@ -124,6 +136,11 @@ def main():
         max_sim_time=args.max_sim_time,
         compute_time_scale=args.compute_time_scale,
         logger=logger,
+        enable_kill=args.enable_kill,
+        kill_threshold=args.kill_threshold,
+        num_to_kill=args.num_to_kill,
+        enable_revive=args.enable_revive,
+        revive_threshold=args.revive_threshold,
     )
 
     print(f'Problem: {args.problem_class}  size={args.problem_size}  '

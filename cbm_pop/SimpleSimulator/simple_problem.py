@@ -905,11 +905,20 @@ class SimpleProblem:
         Updates the cost map representing traversal cost from each current
         robot position to each task_pose.
         """
-        valid_robot_poses = [pose for pose in robot_poses if pose is not None]
-        robots = np.array(valid_robot_poses, dtype=float)   # (n_robots, 2)
-        tasks  = np.array(self.task_poses,   dtype=float)   # (n_tasks,  2)
-        diff   = robots[:, np.newaxis, :] - tasks[np.newaxis, :, :]  # (n_robots, n_tasks, 2)
-        self.current_robot_cost_matrix = np.sqrt((diff ** 2).sum(axis=2))
+        # Maintain a fixed-size matrix corresponding to all possible robots,
+        # with infinite cost for robots that are currently None (failed).
+        n_total = len(robot_poses)
+        n_tasks = len(self.task_poses)
+        matrix  = np.full((n_total, n_tasks), float('inf'))
+
+        tasks = np.array(self.task_poses, dtype=float)
+        for i, pose in enumerate(robot_poses):
+            if pose is not None:
+                p = np.array(pose, dtype=float)
+                diff = p - tasks  # (n_tasks, 2)
+                matrix[i, :] = np.sqrt((diff ** 2).sum(axis=1))
+
+        self.current_robot_cost_matrix = matrix
 
     def initialize_robot_initial_pose_cost_matrix(self, initial_robot_poses):
         """

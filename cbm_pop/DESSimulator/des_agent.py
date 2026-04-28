@@ -146,6 +146,10 @@ class DESAgent:
         self.coalition_best_solution: Optional[tuple]         = None
         self.coalition_best_agent:    Optional[int]           = None
 
+        # Liveness
+        self.is_alive:      bool       = True
+        self.failed_agents: List[bool] = [False] * num_agents
+
         # Coverage
         self.is_covered: List[bool] = [False] * problem.num_tasks
 
@@ -273,10 +277,10 @@ class DESAgent:
 
         num_uncovered = sum(1 for c in self.is_covered if not c)
         snap = step.robot_cost_matrix_snapshot
-        new_f  = self._fitness(result, snap)
-        cur_f  = self._fitness(self.current_solution, snap)
-        loc_f  = self._fitness(self.local_best_solution)
-        coal_f = self._fitness(self.coalition_best_solution)
+        new_f  = self.fitness(result, snap)
+        cur_f  = self.fitness(self.current_solution, snap)
+        loc_f  = self.fitness(self.local_best_solution)
+        coal_f = self.fitness(self.coalition_best_solution)
 
         gain    = new_f - cur_f
         op_idx  = self._op_index(step.operator)
@@ -358,7 +362,7 @@ class DESAgent:
         prepend_adopted = False
         if self.is_append_first_task and self.current_task is not None:
             modified = self._prepend_current_task(candidate)
-            if modified is not None and self._fitness(modified) < self._fitness(candidate):
+            if modified is not None and self.fitness(modified) < self.fitness(candidate):
                 candidate = modified
                 prepend_adopted = True
 
@@ -370,7 +374,7 @@ class DESAgent:
         )
         _candidate_complete = (num_uncovered == 0 or len(candidate[0]) >= num_uncovered)
 
-        if (self._fitness(candidate) < self._fitness(self.coalition_best_solution)
+        if (self.fitness(candidate) < self.fitness(self.coalition_best_solution)
                 or (_coal_incomplete and _candidate_complete)):
             self.coalition_best_solution = candidate
             self.coalition_best_agent    = sender_id
@@ -393,6 +397,60 @@ class DESAgent:
             self._reset_task_lock_state()
 
         self._strip_covered_solutions()
+        self._assign_next_task(self.coalition_best_solution)
+
+    def kill_robot(self, robot_id: int) -> None:
+        """
+        React to robot_id failing.
+
+        If this agent IS the failed robot: marks itself inactive so the DES
+        loop stops scheduling further operator events for it.
+
+        Otherwise: redistributes the failed robot's tasks into this agent's
+        own segment across all solutions (mirrors SimpleSimulator purge_agent).
+        """
+        self.failed_agents[robot_id] = True
+        if robot_id == self.agent_id:
+            self.is_alive = False
+            return
+
+        def _purge(solution):
+            if solution is None or not solution[0]:
+                return solution
+            order, alloc = list(solution[0]), list(solution[1])
+            if robot_id >= len(alloc) or alloc[robot_id] == 0:
+                return (order, alloc)
+            start = sum(alloc[:robot_id])
+            end   = start + alloc[robot_id]
+            purged_tasks = order[start:end]
+            del order[start:end]
+            alloc[robot_id] = 0
+            # my_start is computed AFTER zeroing alloc[robot_id] so the index
+            # is correct regardless of whether agent_id < or > robot_id.
+            my_start = sum(alloc[:self.agent_id])
+            if my_start > len(order):
+                my_start = len(order)
+            order[my_start:my_start] = purged_tasks
+            alloc[self.agent_id] += len(purged_tasks)
+            return (order, alloc)
+
+        self.coalition_best_solution = _purge(self.coalition_best_solution)
+        self.current_solution        = _purge(self.current_solution)
+        self.local_best_solution     = _purge(self.local_best_solution)
+        if self.population:
+            self.population = [_purge(s) for s in self.population]
+        self._assign_next_task(self.coalition_best_solution)
+
+    def revive_robot(self, robot_id: int) -> None:
+        """
+        React to robot_id being revived.
+
+        The failed robot's alloc slot still exists (at 0) in all solutions, so
+        no structural change is needed — operators will naturally repopulate it.
+        """
+        self.failed_agents[robot_id] = False
+        if robot_id == self.agent_id:
+            self.is_alive = True
         self._assign_next_task(self.coalition_best_solution)
 
     # ------------------------------------------------------------------ #
@@ -578,7 +636,7 @@ class DESAgent:
     def _select_solution(self) -> Tuple[Optional[int], Optional[tuple]]:
         if not self.population:
             return None, None
-        return min(enumerate(self.population), key=lambda it: self._fitness(it[1]))
+        return min(enumerate(self.population), key=lambda it: self.fitness(it[1]))
 
     def _select_random_solution(self) -> Tuple[Optional[int], Optional[tuple]]:
         if not self.population:
@@ -617,14 +675,14 @@ class DESAgent:
         if child is None or not self.population or self.current_parent_idx is None:
             return
         try:
-            if self._fitness(child) < self._fitness(
+            if self.fitness(child) < self.fitness(
                 self.population[self.current_parent_idx]
             ):
                 self.population[self.current_parent_idx] = deepcopy(child)
         except (IndexError, Exception):
             pass
 
-    def _fitness(self, sol, robot_cost_matrix_snapshot=None) -> float:
+    def fitness(self, sol, robot_cost_matrix_snapshot=None) -> float:
         if sol is None or self.problem.current_robot_cost_matrix is None:
             return float('inf')
         try:
@@ -805,7 +863,7 @@ class DESAgent:
         if self.is_inject_best_on_cycle and self.coalition_best_solution and self.population:
             if random.random() < self.inject_best_prob:
                 worst = max(range(len(self.population)),
-                            key=lambda k: self._fitness(self.population[k]))
+                            key=lambda k: self.fitness(self.population[k]))
                 self.population[worst] = deepcopy(self.coalition_best_solution)
                 self.current_solution = deepcopy(self.coalition_best_solution)
                 self.current_parent_idx = worst

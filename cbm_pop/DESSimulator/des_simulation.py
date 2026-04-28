@@ -40,6 +40,11 @@ class DESSimulation:
         max_sim_time:       float = float('inf'),
         compute_time_scale: float = 1.0,
         logger=None,
+        enable_kill:        bool  = False,
+        kill_threshold:     float = 0.2,
+        num_to_kill:        int   = 1,
+        enable_revive:      bool  = False,
+        revive_threshold:   float = 0.8,
     ):
         self.problem            = problem
         self.num_agents         = num_agents
@@ -47,6 +52,16 @@ class DESSimulation:
         self.max_sim_time       = max_sim_time
         self.compute_time_scale = compute_time_scale
         self.logger             = logger
+
+        self.enable_kill      = enable_kill
+        self.kill_threshold   = kill_threshold
+        self.num_to_kill      = min(num_to_kill, num_agents)
+        self.enable_revive    = enable_revive
+        self.revive_threshold = revive_threshold
+
+        self.killed_robots:       set  = set()
+        self._is_kill_triggered:  bool = False
+        self._is_revive_triggered: bool = False
 
         self.queue           = EventQueue()
         self.is_covered      = [False] * problem.num_tasks
@@ -131,6 +146,8 @@ class DESSimulation:
             if self.logger:
                 self.logger.tick(self.sim_time, self.is_covered, self.agents)
 
+            self._check_kill_revive()
+
             if all(self.is_covered):
                 exit_reason = 'complete'
                 break
@@ -152,15 +169,20 @@ class DESSimulation:
         agent_id = data['agent_id']
         step: StepData = data['step']
         agent  = self.agents[agent_id]
-        poses  = [r.get_position(self.sim_time) for r in self.robots]
+
+        # Stale event fired after this agent was killed — discard silently.
+        if not agent.is_alive:
+            return
+
+        # Pass None for dead robots so their cost appears infinite in operators.
+        poses  = [r.get_position(self.sim_time) if r.is_alive else None for r in self.robots]
 
         # Bring the agent's robot cost matrix up to the current sim time (when the
         # operator completed) before evaluating the result.  Without this, fitness
         # is assessed against positions from when the operator *started*, not when
         # it *finished*.
         for i, pos in enumerate(poses):
-            if pos is not None:
-                agent.robot_poses[i] = pos
+            agent.robot_poses[i] = pos
         agent.problem.update_robot_cost_matrix(agent.robot_poses)
 
         coalition_improved, weights_to_share = agent.apply_step_result(step, self.sim_time)
@@ -202,7 +224,7 @@ class DESSimulation:
             while current_improvers:
                 best_improver = min(
                     current_improvers,
-                    key=lambda a: a._fitness(a.coalition_best_solution),
+                    key=lambda a: a.fitness(a.coalition_best_solution),
                 )
                 imp_weights = (
                     deepcopy(best_improver.weight_matrix.weights)
@@ -223,20 +245,21 @@ class DESSimulation:
                 self._reschedule_robot(best_improver.agent_id)
                 current_improvers = next_improvers
 
-        # Schedule next step for this agent
-        next_step = agent.compute_step(poses)
-        self.queue.push(
-            self.sim_time + next_step.wall_time * self.compute_time_scale,
-            EventType.OPERATOR_COMPLETE,
-            {'agent_id': agent_id, 'step': next_step},
-        )
+        # Schedule next step for this agent (skip if killed during event handling)
+        if agent.is_alive:
+            next_step = agent.compute_step(poses)
+            self.queue.push(
+                self.sim_time + next_step.wall_time * self.compute_time_scale,
+                EventType.OPERATOR_COMPLETE,
+                {'agent_id': agent_id, 'step': next_step},
+            )
 
         if coalition_improved and self._progress_enabled:
             import time as _wt
             covered   = sum(self.is_covered)
             wall_now  = _wt.monotonic() - self._wall_start
             total_iters = sum(a.iteration_count for a in self.agents)
-            best_fit  = agent._fitness(agent.coalition_best_solution)
+            best_fit  = agent.fitness(agent.coalition_best_solution)
             print(
                 f'  t={self.sim_time:8.2f}  '
                 f'covered={covered}/{self.problem.num_tasks}  '
@@ -248,7 +271,7 @@ class DESSimulation:
             )
 
         if self.logger:
-            fitness = agent._fitness(agent.coalition_best_solution)
+            fitness = agent.fitness(agent.coalition_best_solution)
             self.logger.operator_complete(
                 self.sim_time, agent_id,
                 step.operator.name, step.wall_time,
@@ -268,6 +291,12 @@ class DESSimulation:
         # Stale event — robot's goal changed after this was scheduled
         if not robot.is_current_goal_version(goal_version):
             return
+
+        # Arrived — snapshot position before clearing goal so get_position()
+        # returns the arrival coordinates on subsequent calls.
+        robot._leg_start_pos  = robot._goal
+        robot._leg_start_time = self.sim_time
+        robot._goal           = None
 
         if not self.is_covered[task_id]:
             self.is_covered[task_id] = True
@@ -295,11 +324,20 @@ class DESSimulation:
 
     def _reschedule_robot(self, robot_id: int) -> None:
         """Send robot to its agent's current_task, if valid."""
+        if not self.robots[robot_id].is_alive:
+            return
+
         agent = self.agents[robot_id]
         robot = self.robots[robot_id]
         task  = agent.current_task
 
         if task is None or self.is_covered[task]:
+            # If robot is heading somewhere but should be idle, stop it
+            if robot._goal is not None:
+                robot._leg_start_pos  = robot.get_position(self.sim_time)
+                robot._leg_start_time = self.sim_time
+                robot._goal           = None
+                robot._goal_version  += 1
             return
 
         goal = tuple(self.problem.task_poses[task])
@@ -326,12 +364,129 @@ class DESSimulation:
         })
 
     # ------------------------------------------------------------------ #
+    # Kill / Revive                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _check_kill_revive(self) -> None:
+        if not (self.enable_kill or self.enable_revive):
+            return
+        coverage = sum(self.is_covered) / self.problem.num_tasks
+        if (self.enable_kill
+                and not self._is_kill_triggered
+                and coverage >= self.kill_threshold):
+            self._trigger_kill()
+        elif (self.enable_revive
+                and self._is_kill_triggered
+                and not self._is_revive_triggered
+                and coverage >= self.revive_threshold):
+            self._trigger_revive()
+
+    def _trigger_kill(self) -> None:
+        self._is_kill_triggered = True
+        targets = list(range(self.num_agents - self.num_to_kill, self.num_agents))
+        # Ensure we pick a living agent to receive the tasks
+        survivors = [a for a in self.agents if a.agent_id not in targets]
+        recipient = survivors[0] if survivors else self.agents[0]
+
+        for robot_id in targets:
+            self.killed_robots.add(robot_id)
+
+            # 1. Capture the exact location where the robot stops moving
+            stop_pos = self.robots[robot_id].get_position(self.sim_time)
+
+            self.robots[robot_id].kill(self.sim_time)
+
+            for agent in self.agents:
+                # Use a specific living recipient for redistribution
+                # instead of each agent redistributing to itself.
+                agent.failed_agents[robot_id] = True
+                if robot_id == agent.agent_id:
+                    agent.is_alive = False
+                    continue
+
+                def _purge_to_recipient(solution):
+                    if solution is None or not solution[0]:
+                        return solution
+                    order, alloc = list(solution[0]), list(solution[1])
+                    if robot_id >= len(alloc) or alloc[robot_id] == 0:
+                        return (order, alloc)
+                    start = sum(alloc[:robot_id])
+                    end = start + alloc[robot_id]
+                    purged_tasks = order[start:end]
+                    del order[start:end]
+                    alloc[robot_id] = 0
+
+                    # Compute recipient index in the new order
+                    dest_idx = sum(alloc[:recipient.agent_id])
+                    if dest_idx > len(order):
+                        dest_idx = len(order)
+                    order[dest_idx:dest_idx] = purged_tasks
+                    alloc[recipient.agent_id] += len(purged_tasks)
+                    return (order, alloc)
+
+                agent.coalition_best_solution = _purge_to_recipient(agent.coalition_best_solution)
+                agent.current_solution = _purge_to_recipient(agent.current_solution)
+                agent.local_best_solution = _purge_to_recipient(agent.local_best_solution)
+                if agent.population:
+                    agent.population = [_purge_to_recipient(s) for s in agent.population]
+                agent._assign_next_task(agent.coalition_best_solution)
+
+            if self.logger:
+                # 2. Log a stationary leg to override the previously projected movement
+                self.logger.log_robot_leg(
+                    sim_time=self.sim_time,
+                    robot_id=robot_id,
+                    from_x=stop_pos[0],
+                    from_y=stop_pos[1],
+                    to_x=stop_pos[0],
+                    to_y=stop_pos[1],
+                    task_id=-1,  # Using -1 to indicate an aborted/idle task
+                    arrival_sim_time=self.sim_time
+                )
+                self.logger.robot_killed(self.sim_time, robot_id)
+
+        # Null dead robots' poses so the cost matrix shows infinity for them,
+        # preventing operators from assigning tasks to dead robots.
+        for agent in self.agents:
+            if agent.is_alive:
+                for dead_id in targets:
+                    agent.robot_poses[dead_id] = None
+                agent.problem.update_robot_cost_matrix(agent.robot_poses)
+
+        # Surviving robots may have been assigned extra tasks — reschedule them.
+        for robot_id in range(self.num_agents):
+            if robot_id not in self.killed_robots:
+                self._reschedule_robot(robot_id)
+        print(f'[KILL]   sim_time={self.sim_time:.2f}  robots={targets}', flush=True)
+
+    def _trigger_revive(self) -> None:
+        self._is_revive_triggered = True
+        revived = sorted(self.killed_robots)
+        for robot_id in revived:
+            self.robots[robot_id].revive()
+            for agent in self.agents:
+                agent.revive_robot(robot_id)
+            # Re-enter the revived agent into the optimisation loop.
+            poses = [r.get_position(self.sim_time) for r in self.robots]
+            step  = self.agents[robot_id].compute_step(poses)
+            self.queue.push(
+                self.sim_time + step.wall_time * self.compute_time_scale,
+                EventType.OPERATOR_COMPLETE,
+                {'agent_id': robot_id, 'step': step},
+            )
+            self._reschedule_robot(robot_id)
+            if self.logger:
+                self.logger.robot_revived(self.sim_time, robot_id)
+        self.killed_robots.clear()
+        print(f'[REVIVE] sim_time={self.sim_time:.2f}  robots={revived}', flush=True)
+
+    # ------------------------------------------------------------------ #
     # Initialisation helpers                                               #
     # ------------------------------------------------------------------ #
 
     def _broadcast_best_initial_solution(self) -> None:
         """Find the globally best initial solution and share it to all agents."""
-        best_agent = min(self.agents, key=lambda a: a._fitness(a.coalition_best_solution))
+        best_agent = min(self.agents, key=lambda a: a.fitness(a.coalition_best_solution))
         for agent in self.agents:
             if agent.agent_id != best_agent.agent_id:
                 agent.receive_coalition_best(
@@ -352,6 +507,6 @@ class DESSimulation:
             'complete':             all(self.is_covered),
             'iterations_per_agent': [a.iteration_count for a in self.agents],
             'coalition_fitness':    [
-                a._fitness(a.coalition_best_solution) for a in self.agents
+                a.fitness(a.coalition_best_solution) for a in self.agents
             ],
         }

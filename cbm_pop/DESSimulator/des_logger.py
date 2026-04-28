@@ -169,6 +169,16 @@ class DESLogger:
             f'{sim_time:.6f}', self._wt(), 'COALITION_BEST', agent_id, '', f'{fitness:.6f}',
         ])
 
+    def robot_killed(self, sim_time: float, robot_id: int) -> None:
+        self._ev_w.writerow([
+            f'{sim_time:.6f}', self._wt(), 'ROBOT_KILLED', robot_id, '', '',
+        ])
+
+    def robot_revived(self, sim_time: float, robot_id: int) -> None:
+        self._ev_w.writerow([
+            f'{sim_time:.6f}', self._wt(), 'ROBOT_REVIVED', robot_id, '', '',
+        ])
+
     def close(self) -> None:
         for f in (self._cov_f, self._op_f, self._ev_f,
                   self._path_f, self._di_f, self._wm_f):

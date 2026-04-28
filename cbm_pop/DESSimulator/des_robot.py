@@ -18,6 +18,7 @@ class DESRobot:
     def __init__(self, robot_id: int, start_pos: Tuple[float, float], speed: float):
         self.robot_id = robot_id
         self.speed    = speed
+        self.is_alive = True
 
         self._leg_start_pos:  Tuple[float, float] = start_pos
         self._leg_start_time: float = 0.0
@@ -61,6 +62,18 @@ class DESRobot:
             self._leg_start_pos[0] + dx * frac,
             self._leg_start_pos[1] + dy * frac,
         )
+
+    def kill(self, sim_time: float) -> None:
+        """Freeze the robot at its current position and invalidate pending arrivals."""
+        self._leg_start_pos  = self.get_position(sim_time)
+        self._leg_start_time = sim_time
+        self._goal           = None
+        self._goal_version  += 1   # stales any queued ROBOT_ARRIVAL events
+        self.is_alive        = False
+
+    def revive(self) -> None:
+        """Re-activate the robot; position is already correct from when it was killed."""
+        self.is_alive = True
 
     def is_current_goal_version(self, version: int) -> bool:
         return version == self._goal_version
