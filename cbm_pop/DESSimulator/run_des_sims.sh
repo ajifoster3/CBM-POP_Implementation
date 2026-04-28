@@ -145,10 +145,11 @@ ENABLE_REVIVE=${ENABLE_REVIVE:-"false"}
 REVIVE_THRESHOLD=${REVIVE_THRESHOLD:-0.8}
 
 # ===== Directory layout =====
-KILL_SUFFIX=""
-[[ "$ENABLE_KILL"   == "true" ]] && KILL_SUFFIX="_kill_kth_${KILL_THRESHOLD}_ntk_${NUM_TO_KILL}"
-[[ "$ENABLE_REVIVE" == "true" ]] && KILL_SUFFIX="${KILL_SUFFIX}_rev_rth_${REVIVE_THRESHOLD}"
-PARAM_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}_ctscale_${COMPUTE_TIME_SCALE}_tdiscount_${TIME_DISCOUNT}_tdlambda_${TIME_DISCOUNT_LAMBDA}${KILL_SUFFIX}"
+ENV_SUFFIX=""
+[[ "$ENABLE_KILL"   == "true" ]] && ENV_SUFFIX="_kill_kth_${KILL_THRESHOLD}_ntk_${NUM_TO_KILL}"
+[[ "$ENABLE_REVIVE" == "true" ]] && ENV_SUFFIX="${ENV_SUFFIX}_rev_rth_${REVIVE_THRESHOLD}"
+ENV_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")${ENV_SUFFIX}"
+PARAM_DIR="$ENV_DIR/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_randinit_${RANDOM_INIT}_ctscale_${COMPUTE_TIME_SCALE}_tdiscount_${TIME_DISCOUNT}_tdlambda_${TIME_DISCOUNT_LAMBDA}"
 mkdir -p "$PARAM_DIR"
 
 # ===== Helpers =====
