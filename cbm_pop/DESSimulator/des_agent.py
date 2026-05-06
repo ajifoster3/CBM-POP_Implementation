@@ -34,7 +34,9 @@ class LearningMethod(Enum):
     Q_LEARNING          = 'Q-Learning'
     Q_LEARNING_STEP     = 'Q-Learning-Step'
     Q_LEARNING_SEPARATE = 'Q-Learning-Separate'
-    Q_LEARNING_GAIN     = 'Q-Learning-improveoncurrent'   # step reward = improvement on current solution
+    Q_LEARNING_GAIN          = 'Q-Learning-improveoncurrent'            # step reward = improvement on current solution
+    Q_LEARNING_STEP_GAIN     = 'Q-Learning-Step-improveoncurrent'       # Step variant with improve-on-current reward
+    Q_LEARNING_SEPARATE_GAIN = 'Q-Learning-Separate-improveoncurrent'   # Separate variant with improve-on-current reward
     FERREIRA            = 'Ferreira_et_al.'
     UCB                 = 'UCB'
     UNIFORM             = 'Uniform'
@@ -296,6 +298,11 @@ class DESAgent:
               and step.operator in self.intensifiers):
             self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_GAIN:
+            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
+        elif self.learning_method == LearningMethod.Q_LEARNING_STEP_GAIN:
+            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
+        elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN
+              and step.operator in self.intensifiers):
             self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif self.learning_method == LearningMethod.UCB:
             self.ucb_bandit.update(op_idx, self._apply_time_discount(-gain, gain, step.wall_time))
@@ -839,9 +846,11 @@ class DESAgent:
             self._learning_qlearning(diversifiers_only=False)
         elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE:
             self._learning_qlearning(diversifiers_only=True)
+        elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN:
+            self._learning_qlearning(diversifiers_only=True)
         elif self.learning_method == LearningMethod.FERREIRA:
             self._learning_ferreira()
-        # Q_LEARNING_STEP, Q_LEARNING_GAIN, UCB, UNIFORM: no cycle-end weight update
+        # Q_LEARNING_STEP, Q_LEARNING_STEP_GAIN, Q_LEARNING_GAIN, UCB, UNIFORM: no cycle-end weight update
 
         _mimetism_applicable = self.learning_method not in (
             LearningMethod.UCB, LearningMethod.UNIFORM

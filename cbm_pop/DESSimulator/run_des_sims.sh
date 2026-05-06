@@ -424,8 +424,12 @@ elif [ -n "${START_RUN_ARG:-}" ]; then
       START_RUN=$(( RESUME_LAST_NUM + 1 ))
     else
       echo "[RECOVER] Last run $RESUME_LAST_NUM (range ${START_RUN_ARG}-${END_RUN_ARG}) was incomplete — preserving logs and re-running."
-      mv "$RESUME_LAST_DIR" "${RESUME_LAST_DIR}_recovered_$(date +%s)"
-      START_RUN=$RESUME_LAST_NUM
+      if mv "$RESUME_LAST_DIR" "${RESUME_LAST_DIR}_recovered_$(date +%s)" 2>/dev/null; then
+        START_RUN=$RESUME_LAST_NUM
+      else
+        echo "[RECOVER] Could not rename ${RESUME_LAST_DIR} — another job claimed it. Starting from run $RESUME_LAST_NUM anyway."
+        START_RUN=$RESUME_LAST_NUM
+      fi
     fi
   fi
 
