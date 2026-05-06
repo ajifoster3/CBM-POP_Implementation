@@ -51,7 +51,7 @@ mkdir -p "$RESULTS_ROOT"
 # ===== CLI parsing =====
 PARSED=$(getopt \
   -o p:a: \
-  -l problem-size:,agents:,problem-class:,problem-seed:,run-id:,num-runs:,\
+  -l problem-size:,agents:,problem-class:,problem-seed:,run-id:,num-runs:,start-run:,end-run:,\
 method:,speed:,max-sim-time:,pop-size:,di-cycle-length:,num-solution-attempts:,\
 lr:,gamma-decay:,positive-reward:,negative-reward:,rho:,eta:,\
 ucb-c:,ucb-window:,time-discount:,time-discount-lambda:,is-free-weight-matrix:,\
@@ -70,6 +70,8 @@ while true; do
     --problem-seed)               PROBLEM_SEED="$2";            shift 2 ;;
     --run-id)                     RUN_ID="$2";                  shift 2 ;;
     --num-runs)                   NUM_RUNS="$2";                shift 2 ;;
+    --start-run)                  START_RUN_ARG="$2";           shift 2 ;;
+    --end-run)                    END_RUN_ARG="$2";             shift 2 ;;
     --method)                     METHOD="$2";                  shift 2 ;;
     --speed)                      SPEED="$2";                   shift 2 ;;
     --max-sim-time)               MAX_SIM_TIME="$2";            shift 2 ;;
@@ -113,6 +115,8 @@ PROBLEM_CLASS=${PROBLEM_CLASS:-"Simple_Grid"}
 PROBLEM_SEED=${PROBLEM_SEED:-}
 RUN_ID=${RUN_ID:-${SLURM_ARRAY_TASK_ID:-}}   # empty = local multi-run mode
 NUM_RUNS=${NUM_RUNS:-1}
+START_RUN_ARG=${START_RUN_ARG:-}
+END_RUN_ARG=${END_RUN_ARG:-}
 SPEED=${SPEED:-1.0}
 MAX_SIM_TIME=${MAX_SIM_TIME:-"inf"}
 POP_SIZE=${POP_SIZE:-10}
@@ -389,25 +393,59 @@ run_one() {
 write_param_tag "$PARAM_DIR"
 
 # ===== Determine run range =====
+# Helper: find the last completed or incomplete run_N within [lo, hi] in PARAM_DIR.
+# Sets RESUME_LAST_NUM and RESUME_LAST_DIR (empty string if none found).
+find_last_run_in_range() {
+  local lo="$1" hi="$2"
+  RESUME_LAST_NUM=0
+  RESUME_LAST_DIR=""
+  local _d _n
+  for _d in $(ls -d "$PARAM_DIR"/run_[0-9]* 2>/dev/null | grep -E '/run_[0-9]+$' | sort -V); do
+    _n=$(basename "$_d" | sed 's/run_//')
+    if [ "$_n" -ge "$lo" ] && [ "$_n" -le "$hi" ]; then
+      RESUME_LAST_NUM=$_n
+      RESUME_LAST_DIR=$_d
+    fi
+  done
+}
+
 if [ -n "${RUN_ID:-}" ]; then
   # SLURM array mode: run exactly this one ID
   START_RUN=$RUN_ID
   END_RUN=$RUN_ID
+elif [ -n "${START_RUN_ARG:-}" ]; then
+  # Range mode: --start-run / --end-run supplied explicitly (parallel-job partitioning)
+  START_RUN=${START_RUN_ARG}
+  END_RUN=${END_RUN_ARG}
+
+  find_last_run_in_range "$START_RUN" "$END_RUN"
+  if [ -n "$RESUME_LAST_DIR" ]; then
+    if check_des_complete "$RESUME_LAST_DIR" 2>/dev/null; then
+      START_RUN=$(( RESUME_LAST_NUM + 1 ))
+    else
+      echo "[RECOVER] Last run $RESUME_LAST_NUM (range ${START_RUN_ARG}-${END_RUN_ARG}) was incomplete — preserving logs and re-running."
+      mv "$RESUME_LAST_DIR" "${RESUME_LAST_DIR}_recovered_$(date +%s)"
+      START_RUN=$RESUME_LAST_NUM
+    fi
+  fi
+
+  if [ "$START_RUN" -gt "$END_RUN" ]; then
+    echo "[INFO] All runs ${START_RUN_ARG}-${END_RUN_ARG} already complete in $PARAM_DIR."
+    exit 0
+  fi
 else
-  # Local multi-run mode: resume from last completed
+  # Legacy --num-runs mode: resume from last completed run across the whole range
   START_RUN=1
   END_RUN=$NUM_RUNS
 
-  if ls -d "$PARAM_DIR"/run_[0-9]* >/dev/null 2>&1; then
-    LAST_DIR=$(ls -d "$PARAM_DIR"/run_[0-9]* 2>/dev/null \
-               | grep -E '/run_[0-9]+$' | sort -V | tail -n 1)
-    LAST_NUM=$(basename "$LAST_DIR" | sed 's/run_//')
-    if check_des_complete "$LAST_DIR" 2>/dev/null; then
-      START_RUN=$(( LAST_NUM + 1 ))
+  find_last_run_in_range "$START_RUN" "$END_RUN"
+  if [ -n "$RESUME_LAST_DIR" ]; then
+    if check_des_complete "$RESUME_LAST_DIR" 2>/dev/null; then
+      START_RUN=$(( RESUME_LAST_NUM + 1 ))
     else
-      echo "[RECOVER] Last run $LAST_NUM was incomplete — preserving logs and re-running."
-      mv "$LAST_DIR" "${LAST_DIR}_recovered_$(date +%s)"
-      START_RUN=$LAST_NUM
+      echo "[RECOVER] Last run $RESUME_LAST_NUM was incomplete — preserving logs and re-running."
+      mv "$RESUME_LAST_DIR" "${RESUME_LAST_DIR}_recovered_$(date +%s)"
+      START_RUN=$RESUME_LAST_NUM
     fi
   fi
 
