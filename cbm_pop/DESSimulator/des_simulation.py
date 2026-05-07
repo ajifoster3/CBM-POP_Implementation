@@ -464,8 +464,11 @@ class DESSimulation:
         revived = sorted(self.killed_robots)
         for robot_id in revived:
             self.robots[robot_id].revive()
+            revived_pos = self.robots[robot_id].get_position(self.sim_time)
             for agent in self.agents:
                 agent.revive_robot(robot_id)
+                agent.robot_poses[robot_id] = revived_pos
+                agent.problem.update_robot_cost_matrix(agent.robot_poses)
             # Re-enter the revived agent into the optimisation loop.
             poses = [r.get_position(self.sim_time) for r in self.robots]
             step  = self.agents[robot_id].compute_step(poses)

@@ -38,7 +38,9 @@ def parse_args():
     # Agent
     p.add_argument('--method',             type=str,   default='UCB',
                    choices=['Q-Learning', 'Q-Learning-Step', 'Q-Learning-Separate',
-                            'Q-Learning-improveoncurrent', 'Ferreira_et_al.', 'UCB', 'Uniform'])
+                            'Q-Learning-improveoncurrent', 'Q-Learning-Step-improveoncurrent',
+                            'Q-Learning-Separate-improveoncurrent',
+                            'Ferreira_et_al.', 'UCB', 'Uniform'])
     p.add_argument('--pop_size',           type=int,   default=10)
     p.add_argument('--di_cycle_length',    type=int,   default=10)
     p.add_argument('--num_solution_attempts', type=int, default=21)
