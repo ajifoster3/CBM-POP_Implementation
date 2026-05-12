@@ -63,9 +63,11 @@ def parse_args():
                    help='Use free (all-ones) weight matrix instead of classical')
     p.add_argument('--random_init', action='store_true',
                    help='Initialise population randomly instead of with Voronoi heuristic')
-    p.add_argument('--is_knn_enabled',     action='store_true', default=True)
+    p.add_argument('--no_knn',             action='store_true',
+                   help='Disable KNN operator')
     p.add_argument('--no_mimetism',        action='store_true')
-    p.add_argument('--inject_best',        action='store_true', default=True)
+    p.add_argument('--no_inject',          action='store_true',
+                   help='Disable inject-best-on-cycle')
     p.add_argument('--inject_best_prob',   type=float, default=0.9)
     p.add_argument('--no_append_first_task', action='store_true',
                    help='Disable prepending current task when receiving coalition best')
@@ -118,9 +120,9 @@ def main():
         time_discount_lambda=args.time_discount_lambda,
         is_free_weight_matrix=args.is_free_weight_matrix,
         initialise_with_heuristic=not args.random_init,
-        is_knn_enabled=args.is_knn_enabled,
+        is_knn_enabled=not args.no_knn,
         is_mimetism_enabled=not args.no_mimetism,
-        is_inject_best_on_cycle=args.inject_best,
+        is_inject_best_on_cycle=not args.no_inject,
         inject_best_prob=args.inject_best_prob,
         is_append_first_task=not args.no_append_first_task,
     )
