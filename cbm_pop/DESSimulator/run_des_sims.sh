@@ -344,7 +344,7 @@ run_one() {
 
   echo "   [START] run_id=${_run_id} seed=${_seed} agents=${NUM_AGENTS} size=${PROBLEM_SIZE} class=${PROBLEM_CLASS}"
 
-  stdbuf -oL -eL "${_cmd[@]}" >> "$_log" 2>&1 &
+  PYTHONUNBUFFERED=1 "${_cmd[@]}" >> "$_log" 2>&1 &
   SIM_PID=$!
 
   local _start
