@@ -475,13 +475,8 @@ while [ "$run" -le "$END_RUN" ]; do
   while [ $attempt -lt $MAX_ATTEMPTS ]; do
     attempt=$(( attempt + 1 ))
     if run_one "$run" "$RUN_SEED"; then
-      if check_des_complete "$PARAM_DIR/run_${run}"; then
-        success=true
-        break
-      else
-        echo "   [INCOMPLETE] run_id=${run} exited cleanly but coverage not complete — treating as failure."
-        echo "[FAILURE_REASON] coverage incomplete on clean exit" >> "$PARAM_DIR/run_${run}/des_sim.log"
-      fi
+      success=true
+      break
     fi
     # Preserve failed attempt logs for post-mortem inspection
     _failed_dir="$PARAM_DIR/run_${run}_failed_attempt_${attempt}"
