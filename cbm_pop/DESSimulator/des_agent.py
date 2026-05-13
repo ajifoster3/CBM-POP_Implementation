@@ -34,9 +34,9 @@ class LearningMethod(Enum):
     Q_LEARNING          = 'Q-Learning'
     Q_LEARNING_STEP     = 'Q-Learning-Step'
     Q_LEARNING_SEPARATE = 'Q-Learning-Separate'
-    Q_LEARNING_GAIN          = 'Q-Learning-improveoncurrent'            # step reward = improvement on current solution
-    Q_LEARNING_STEP_GAIN     = 'Q-Learning-Step-improveoncurrent'       # Step variant with improve-on-current reward
-    Q_LEARNING_SEPARATE_GAIN = 'Q-Learning-Separate-improveoncurrent'   # Separate variant with improve-on-current reward
+    Q_LEARNING_GAIN          = 'Q-Learning-improveoncurrent'            # reward = improvement over DI-cycle start
+    Q_LEARNING_STEP_GAIN     = 'Q-Learning-Step-improveoncurrent'       # Step variant with immediate-current reward
+    Q_LEARNING_SEPARATE_GAIN = 'Q-Learning-Separate-improveoncurrent'   # Separate variant with immediate-current reward
     FERREIRA            = 'Ferreira_et_al.'
     UCB                 = 'UCB'
     UNIFORM             = 'Uniform'
@@ -171,6 +171,7 @@ class DESAgent:
         # Learning
         self.previous_experience:      list = []
         self.received_weight_matrices: list = []
+        self.di_cycle_start_solution:  Optional[tuple] = None
         self.di_cycle_count:           int  = 0
         self.di_cycle_total:           int  = 0
         self.iteration_count:          int  = 0
@@ -235,6 +236,9 @@ class DESAgent:
             self.current_parent_idx, self.current_solution = self._select_random_solution()
             self.no_improvement_attempt_count = 0
 
+        if self.di_cycle_count == 0 and self.di_cycle_start_solution is None:
+            self.di_cycle_start_solution = deepcopy(self.current_solution)
+
         condition = ConditionFunctions.perceive_condition_row(
             self.previous_experience, self.intensifiers, self.diversifiers
         )
@@ -281,15 +285,20 @@ class DESAgent:
         snap = step.robot_cost_matrix_snapshot
         new_f  = self.fitness(result, snap)
         cur_f  = self.fitness(self.current_solution, snap)
+        if self.di_cycle_start_solution is None:
+            self.di_cycle_start_solution = deepcopy(self.current_solution)
+        cycle_start_f = self.fitness(self.di_cycle_start_solution, snap)
         loc_f  = self.fitness(self.local_best_solution)
         coal_f = self.fitness(self.coalition_best_solution)
 
-        gain    = new_f - cur_f
+        gain       = new_f - cur_f
+        cycle_gain = new_f - cycle_start_f
         op_idx  = self._op_index(step.operator)
         self.previous_experience.append([step.condition, op_idx, gain])
 
-        step_improved_local   = (loc_f == float('inf')) or (new_f < loc_f)
-        step_improved_current = gain < 0
+        step_improved_local       = (loc_f == float('inf')) or (new_f < loc_f)
+        step_improved_current     = gain < 0
+        step_improved_cycle_start = cycle_gain < 0
 
         # Step-level learning
         if self.learning_method == LearningMethod.Q_LEARNING_STEP:
@@ -298,7 +307,7 @@ class DESAgent:
               and step.operator in self.intensifiers):
             self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_GAIN:
-            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
+            self._learning_step(step.condition, op_idx, step_improved_cycle_start, cycle_gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_STEP_GAIN:
             self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN
@@ -444,6 +453,7 @@ class DESAgent:
         self.coalition_best_solution = _purge(self.coalition_best_solution)
         self.current_solution        = _purge(self.current_solution)
         self.local_best_solution     = _purge(self.local_best_solution)
+        self.di_cycle_start_solution = _purge(self.di_cycle_start_solution)
         if self.population:
             self.population = [_purge(s) for s in self.population]
         self._assign_next_task(self.coalition_best_solution)
@@ -719,7 +729,8 @@ class DESAgent:
         return (new_order, new_alloc)
 
     def _strip_covered_solutions(self) -> None:
-        for attr in ('current_solution', 'coalition_best_solution', 'local_best_solution'):
+        for attr in ('current_solution', 'coalition_best_solution', 'local_best_solution',
+                     'di_cycle_start_solution'):
             sol = getattr(self, attr)
             if sol is not None:
                 setattr(self, attr, self._remove_covered(sol))
@@ -896,6 +907,7 @@ class DESAgent:
 
         self.di_cycle_total         += 1
         self.previous_experience     = []
+        self.di_cycle_start_solution = None
         self.di_cycle_count          = 0
         self.best_local_improved     = False
         self.best_coalition_improved = False

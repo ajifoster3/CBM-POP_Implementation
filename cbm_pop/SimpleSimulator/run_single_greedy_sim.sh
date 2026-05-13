@@ -7,10 +7,10 @@
 # - retry-on-startup-failure + stuck detection
 #
 # Usage:
-#   chmod +x run_simple_sim.sh
-#   ./run_simple_sim.sh --agents 10 --problem-size 15 --problem-class Simple_Grid
-#   ./run_simple_sim.sh --enable-kill true --kill-thresholds "0.2 0.3" --num-to-kill 3
-#   ./run_simple_sim.sh --enable-revive true --revive-threshold "0.4 0.6"
+#   chmod +x run_single_greedy_sim.sh
+#   ./run_single_greedy_sim.sh --agents 10 --problem-size 15 --problem-class Simple_Grid
+#   ./run_single_greedy_sim.sh --enable-kill true --kill-thresholds "0.2 0.3" --num-to-kill 3
+#   ./run_single_greedy_sim.sh --enable-revive true --revive-threshold "0.4 0.6"
 
 # --- strict mode, but allow unset vars while sourcing ROS/overlay ---
 set -e
@@ -292,6 +292,7 @@ start_all_processes () {
   LOGGER_PID=$(start_logged "$LOGGER_LOG" "$ROS2_LOG_DIR" \
     ros2 run "$PACKAGE_NAME" "$LOGGER_EXECUTABLE" \
       --ros-args \
+      -p use_sim_time:=true \
       -p parent_log_dir:="'$CONFIG_DIR'" \
       -p num_tsp_agents:="$NUM_AGENTS" \
       -p problem_size:="$PROBLEM_SIZE")
@@ -311,6 +312,7 @@ start_all_processes () {
   if [[ "$CUR_ENABLE_REVIVE" == "true" ]]; then
     SIM_CMD+=( --enable_revive --revive_threshold "$CUR_REVIVE_TH" )
   fi
+  SIM_CMD+=( --ros-args -p use_sim_time:=true )
   SIM_PID=$(start_logged "$SIM_LOG" "$ROS2_LOG_DIR" "${SIM_CMD[@]}")
   PID_ROLE["$SIM_PID"]="simulator"; PID_LOG["$SIM_PID"]="$SIM_LOG"
 
@@ -319,6 +321,7 @@ start_all_processes () {
     local -a CMD=(
       ros2 run "$PACKAGE_NAME" "$AGENT_EXECUTABLE"
       --ros-args
+      -p use_sim_time:=true
       -p agent_id:="$i"
       -p num_tsp_agents:="$NUM_AGENTS"
       -p problem_size:="$PROBLEM_SIZE"
