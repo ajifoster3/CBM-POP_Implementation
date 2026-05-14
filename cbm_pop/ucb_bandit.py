@@ -11,15 +11,25 @@ class UCBBandit:
         self._history = [deque(maxlen=window) for _ in range(n_operators)]
         self.N = 0  # global pull count, never reset
 
-    def select(self) -> int:
-        untried = [i for i, h in enumerate(self._history) if len(h) == 0]
+    def select(self, admissible_indices=None) -> int:
+        if admissible_indices is None:
+            admissible = list(range(len(self._history)))
+        else:
+            admissible = [int(i) for i in admissible_indices]
+
+        if not admissible:
+            raise ValueError("UCBBandit.select() requires at least one admissible operator")
+        if min(admissible) < 0 or max(admissible) >= len(self._history):
+            raise IndexError("admissible operator index out of range")
+
+        untried = [i for i in admissible if len(self._history[i]) == 0]
         if untried:
             return random.choice(untried)
 
-        means = np.array([np.mean(h) for h in self._history])
-        counts = np.array([len(h) for h in self._history])
+        means = np.array([np.mean(self._history[i]) for i in admissible])
+        counts = np.array([len(self._history[i]) for i in admissible])
         bonus = self.c * np.sqrt(np.log(self.N) / counts)
-        return int(np.argmax(means + bonus))
+        return admissible[int(np.argmax(means + bonus))]
 
     def update(self, op_idx: int, reward: float):
         self._history[op_idx].append(reward)

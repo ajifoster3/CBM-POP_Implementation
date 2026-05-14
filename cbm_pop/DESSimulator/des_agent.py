@@ -123,6 +123,7 @@ class DESAgent:
         self.weight_matrix = WeightMatrix(
             len(self.intensifiers), len(self.diversifiers), is_free_weight_matrix
         )
+        self.operator_admissibility = self._build_classical_admissibility_matrix()
 
         try:
             self.learning_method = LearningMethod(method)
@@ -244,7 +245,8 @@ class DESAgent:
         )
         enabled = self.intensifiers + self.diversifiers
         if self.learning_method == LearningMethod.UCB:
-            operator = enabled[self.ucb_bandit.select()]
+            admissible = self._admissible_operator_indices(condition)
+            operator = enabled[self.ucb_bandit.select(admissible)]
         else:
             operator = OperatorFunctions.choose_operator(
                 self.weight_matrix.weights, condition, enabled
@@ -767,6 +769,22 @@ class DESAgent:
             return ops.index(operator)
         except ValueError:
             return 0
+
+    def _build_classical_admissibility_matrix(self) -> list:
+        n_int = len(self.intensifiers)
+        n_div = len(self.diversifiers)
+        rows = []
+        rows.append([0.0] * n_int + [1.0] * n_div)
+        rows.append([1.0] * n_int + [0.0] * n_div)
+        for i in range(n_int):
+            row = [1.0] * n_int + [0.0] * n_div
+            row[i] = 0.0
+            rows.append(row)
+        return rows
+
+    def _admissible_operator_indices(self, condition: int) -> list:
+        row = self.operator_admissibility[int(condition)]
+        return [idx for idx, allowed in enumerate(row) if allowed > 0.0]
 
     # ------------------------------------------------------------------ #
     # DI-cycle learning                                                    #
