@@ -786,6 +786,12 @@ class DESAgent:
         row = self.operator_admissibility[int(condition)]
         return [idx for idx, allowed in enumerate(row) if allowed > 0.0]
 
+    def _next_condition_after_operator(self, op_idx: int) -> int:
+        op_idx = int(op_idx)
+        if op_idx < len(self.intensifiers):
+            return 2 + op_idx
+        return 1
+
     # ------------------------------------------------------------------ #
     # DI-cycle learning                                                    #
     # ------------------------------------------------------------------ #
@@ -827,7 +833,8 @@ class DESAgent:
                        gain: float = 0.0, wall_time: float = 0.0) -> None:
         """Per-step Q-learning update (used by Q_LEARNING_STEP and Q_LEARNING_SEPARATE)."""
         q        = self.weight_matrix.weights[condition][op_idx]
-        max_next = max(self.weight_matrix.weights[condition])
+        next_condition = self._next_condition_after_operator(op_idx)
+        max_next = max(self.weight_matrix.weights[next_condition])
         reward   = self.positive_reward if improved else self.negative_reward
         reward   = self._apply_time_discount(reward, gain, wall_time)
         q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
@@ -849,7 +856,8 @@ class DESAgent:
                 continue
             seen.add(key)
             q        = self.weight_matrix.weights[cond][op_col]
-            max_next = max(self.weight_matrix.weights[cond])
+            next_condition = self._next_condition_after_operator(op_col)
+            max_next = max(self.weight_matrix.weights[next_condition])
             q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
             self.weight_matrix.weights[cond][op_col] = max(q_new, 1e-6)
 
