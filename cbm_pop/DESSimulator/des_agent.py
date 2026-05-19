@@ -863,6 +863,8 @@ class DESAgent:
 
     def _learning_ferreira(self) -> None:
         """Cycle-end Ferreira et al. incremental update."""
+        if not self.best_local_improved:
+            return
         min_idx = self._best_episode_cutoff()
         seen    = set()
         for i in range(min_idx):
@@ -871,7 +873,7 @@ class DESAgent:
             if key in seen:
                 continue
             seen.add(key)
-            increment = 1.0 if self.best_coalition_improved else self.eta
+            increment = self.eta if self.best_coalition_improved else 1.0
             self.weight_matrix.weights[cond][int(op_col)] += increment
 
     def _finish_di_cycle(self) -> Optional[list]:
