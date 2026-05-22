@@ -56,7 +56,7 @@ method:,speed:,max-sim-time:,pop-size:,di-cycle-length:,num-solution-attempts:,\
 lr:,gamma-decay:,positive-reward:,negative-reward:,rho:,eta:,\
 ucb-c:,ucb-window:,time-discount:,time-discount-lambda:,is-free-weight-matrix:,\
 is-knn-enabled:,is-mimetism-enabled:,is-inject-best-on-cycle:,inject-best-prob:,\
-is-append-first-task:,random-init:,init-method:,compute-time-scale:,\
+is-append-first-task:,random-init:,init-method:,init_method:,compute-time-scale:,\
 progress-interval:,output-root:,\
 enable-kill:,kill-threshold:,num-to-kill:,enable-revive:,revive-threshold: \
   -- "$@") || { echo "Invalid options"; exit 1; }
@@ -95,7 +95,7 @@ while true; do
     --inject-best-prob)           INJECT_BEST_PROB="$2";        shift 2 ;;
     --is-append-first-task)       IS_APPEND_FIRST_TASK="$2";    shift 2 ;;
     --random-init)                RANDOM_INIT="$2";             shift 2 ;;
-    --init-method)                INIT_METHOD="$2";             shift 2 ;;
+    --init-method|--init_method)  INIT_METHOD="$2";             shift 2 ;;
     --compute-time-scale)         COMPUTE_TIME_SCALE="$2";      shift 2 ;;
     --progress-interval)          PROGRESS_INTERVAL="$2";       shift 2 ;;
     --output-root)                RESULTS_ROOT="$2";            shift 2 ;;
