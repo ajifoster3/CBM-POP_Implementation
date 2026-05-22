@@ -1,4 +1,6 @@
+import argparse
 import csv
+import sys
 import math
 from datetime import datetime
 import os
@@ -38,10 +40,24 @@ class ProblemAdapter:
 
 
 class RealisticFitnessLogger(Node):
-    def __init__(self, problem_class: ProblemClass = ProblemClass.FourWhichWay):
+    def __init__(self, args, problem_class: ProblemClass = ProblemClass.FourWhichWay):
         super().__init__('fitness_logger')
         print("Starting Logger")
         self.logging_start_time = time()
+
+        # kill-robot trigger config from arguments
+        self.is_kill_enabled = bool(args.enable_kill)
+        self.kill_threshold = float(args.kill_threshold)
+        self.number_to_kill = int(args.num_to_kill)
+        self.is_kill_published = False
+        self.kill_pubs = []  # set in start_listeners if enabled
+
+        # revive-robot trigger config from arguments
+        self.is_revive_enabled = bool(args.enable_revive)
+        self.revive_threshold = float(args.revive_threshold)
+        self.number_to_revive = self.number_to_kill
+        self.is_revive_published = False
+        self.revive_pubs = []
 
         # Timeouts
         self.timeout = 10.0
@@ -131,6 +147,7 @@ class RealisticFitnessLogger(Node):
         # State
         self.best_fitness = None
         self.best_solution = None
+        self.is_covered = [False] * len(self.task_poses)
         self.finished_robots = [False] * self.num_tsp_agents
 
         # Diagnostics
@@ -173,6 +190,15 @@ class RealisticFitnessLogger(Node):
         self.stop_subscriber = self.create_subscription(
             Bool, 'stop_plotting', self.stop_callback, 10
         )
+
+
+        if self.is_revive_enabled:
+            for i in range(self.number_to_revive):
+                self.revive_pubs.append(self.create_publisher(
+                    Bool,
+                    f"/central_control/uas_{self.num_tsp_agents - 1 - i}/revive_robot",
+                    10
+                ))
 
         # Timers
         self.create_timer(1.0, self.check_timeout)
@@ -485,6 +511,52 @@ class RealisticFitnessLogger(Node):
         with open(self.environmental_log_file, mode="a", newline="") as f:
             csv.writer(f).writerow([timestamp, msg.agent_id, json.dumps(list(msg.is_covered))])
 
+        for i in range(len(msg.is_covered)):
+            if msg.is_covered[i]:
+                if i < len(self.is_covered):
+                    self.is_covered[i] = True
+
+        # kill logic — only if enabled
+        if self.is_kill_enabled and not self.is_kill_published:
+            total_tasks = len(self.is_covered)
+            if total_tasks > 0:
+                covered = sum(self.is_covered)
+                ratio = covered / total_tasks
+                if ratio >= self.kill_threshold:
+                    # pick random agents to kill (once)
+                    if not self.kill_pubs:
+                        import random
+                        n = self.expected_agents or self.num_tsp_agents
+                        k = min(self.number_to_kill, n)
+                        ids = random.sample(range(n), k)
+                        self.kill_pubs = [
+                            self.create_publisher(Bool, f"/central_control/uas_{rid}/kill_robot", 10)
+                            for rid in ids
+                        ]
+
+                    # publish kill
+                    for pub in self.kill_pubs:
+                        for _ in range(4):
+                            kill_msg = Bool()
+                            kill_msg.data = True
+                            pub.publish(kill_msg)
+                    self.is_kill_published = True
+
+        if self.is_revive_enabled and self.is_kill_published and not self.is_revive_published:
+            total_tasks = len(self.is_covered)
+            if total_tasks > 0:
+                covered = sum(self.is_covered)
+                ratio = covered / total_tasks
+                if ratio >= self.revive_threshold:
+                    if self.revive_pubs is not None:
+                        for i in self.revive_pubs:
+                            for _ in range(4):
+                                revive_msg = Bool()
+                                revive_msg.data = True
+                                i.publish(revive_msg)
+                        self.is_revive_published = True
+
+
     def stop_callback(self, msg: Bool):
         if msg.data:
             self.debug("Stop signal received. Terminating node.")
@@ -513,9 +585,28 @@ class RealisticFitnessLogger(Node):
         return math.sqrt(surface * surface + dz * dz)
 
 
-def main(args=None):
-    rclpy.init(args=args)
-    fitness_logger = RealisticFitnessLogger()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Run realistic fitness logger")
+    parser.add_argument('--enable_kill', action='store_true',
+                        help='Enable publishing a kill message once coverage reaches threshold')
+    parser.add_argument('--kill_threshold', type=float, default=0.20,
+                        help='Coverage fraction (0-1) at which to publish kill (default 0.20)')
+    parser.add_argument('--num_to_kill', type=int, default=1,
+                        help='Number of robots to kill if kill enabled')
+    parser.add_argument('--enable_revive', action='store_true',
+                        help='Enable publishing a revival message once coverage reaches a threshold')
+    parser.add_argument('--revive_threshold', type=float, default=0.80,
+                        help='Coverage fraction (0-1) at which to publish revive (default 0.80)')
+
+    # IMPORTANT: don't let argparse choke on ROS2 args
+    if argv is None:
+        argv = sys.argv[1:]
+    parsed_args, ros_args = parser.parse_known_args(argv)
+
+    # give ROS2 ONLY the leftover args (including --ros-args -p ...)
+    rclpy.init(args=ros_args)
+
+    fitness_logger = RealisticFitnessLogger(args=parsed_args)
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(fitness_logger)
 

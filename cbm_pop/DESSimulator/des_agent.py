@@ -74,6 +74,7 @@ class DESAgent:
         inject_best_prob:      float = 0.9,
         is_free_weight_matrix:    bool  = False,
         initialise_with_heuristic: bool = True,
+        init_method:           str   = 'voronoi',
         method:                str   = 'Q-Learning',
         ucb_c:                 float = 1.414,
         ucb_window:            int   = 200,
@@ -100,6 +101,7 @@ class DESAgent:
         self.is_inject_best_on_cycle      = is_inject_best_on_cycle
         self.inject_best_prob             = inject_best_prob
         self.initialise_with_heuristic    = initialise_with_heuristic
+        self.init_method                  = init_method
 
         if is_knn_enabled:
             self.intensifiers = [
@@ -580,9 +582,11 @@ class DESAgent:
 
     def _generate_population(self) -> list:
         """Dispatch to heuristic or random initialisation based on agent config."""
-        if self.initialise_with_heuristic:
-            return self._generate_population_voronoi()
-        return self._generate_population_random()
+        if self.init_method == 'greedy':
+            return self._generate_population_greedy()
+        if self.init_method == 'random' or not self.initialise_with_heuristic:
+            return self._generate_population_random()
+        return self._generate_population_voronoi()
 
     def _generate_population_random(self) -> list:
         """Randomly assign and order uncovered tasks — no Voronoi bias."""
@@ -648,6 +652,69 @@ class DESAgent:
         population.append(base)
         num_tasks = len(base_order)
         for i in range(1, self.pop_size):
+            num_swaps = random.randint(1, max(1, num_tasks // 4))
+            population.append(self._perturb_solution(base, num_swaps))
+        return population
+
+    def _generate_population_greedy(self) -> list:
+        """
+        Time-aware greedy construction: at each step assign the (robot, task) pair
+        with the earliest simulated arrival time.
+
+        Each robot tracks when it finishes its last task (time_available) and its
+        position at that point.  The arrival time for a candidate pair is:
+            time_available[robot] + dist(robot_pos, task_pos)
+        (distance is a valid time surrogate because all robots share the same speed).
+
+        This mirrors what the online greedy DES does — a robot that already has a
+        long chain of assignments will not keep stealing nearby tasks from an idle
+        robot that can reach them sooner.
+        """
+        import math
+
+        uncovered = [t for t, c in enumerate(self.is_covered) if not c]
+        if not uncovered:
+            return self._generate_population_random()
+
+        alive_agents = [a for a in range(self.num_agents) if not self.failed_agents[a]]
+        if not alive_agents:
+            return self._generate_population_random()
+
+        robot_positions = [list(p) if p is not None else [0.0, 0.0]
+                           for p in self.robot_poses]
+        time_available = [0.0] * self.num_agents
+        per_agent_routes: list = [[] for _ in range(self.num_agents)]
+        unassigned: set = set(uncovered)
+
+        while unassigned:
+            best_arrival = float('inf')
+            best_robot   = None
+            best_task    = None
+            for a in alive_agents:
+                pos = robot_positions[a]
+                t_free = time_available[a]
+                for t in unassigned:
+                    tp      = self.problem.task_poses[t]
+                    arrival = t_free + math.hypot(pos[0] - tp[0], pos[1] - tp[1])
+                    if arrival < best_arrival:
+                        best_arrival = arrival
+                        best_robot   = a
+                        best_task    = t
+            if best_robot is None:
+                break
+            per_agent_routes[best_robot].append(best_task)
+            robot_positions[best_robot] = list(self.problem.task_poses[best_task])
+            time_available[best_robot]  = best_arrival
+            unassigned.discard(best_task)
+
+        self._ensure_min_one(per_agent_routes)
+        base_order = [t for r in per_agent_routes for t in r]
+        base_alloc = [len(r) for r in per_agent_routes]
+        base = (base_order, base_alloc)
+
+        population = [base]
+        num_tasks = len(base_order)
+        for _ in range(1, self.pop_size):
             num_swaps = random.randint(1, max(1, num_tasks // 4))
             population.append(self._perturb_solution(base, num_swaps))
         return population

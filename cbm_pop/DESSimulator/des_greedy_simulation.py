@@ -54,6 +54,7 @@ class DESGreedySimulation:
 
         self.queue      = EventQueue()
         self.is_covered = [False] * problem.num_tasks
+        self._pending_leg: dict = {}   # robot_id -> (from_pos, start_time, task_id)
 
         rng  = np.random.default_rng(seed)
         lo, hi = 0, problem.grid_size
@@ -61,6 +62,8 @@ class DESGreedySimulation:
             (float(rng.uniform(lo, hi)), float(rng.uniform(lo, hi)))
             for _ in range(num_agents)
         ]
+
+        self.robot_starts = starts
 
         self.robots: List[DESRobot] = [
             DESRobot(i, starts[i], robot_speed) for i in range(num_agents)
@@ -114,6 +117,9 @@ class DESGreedySimulation:
                 exit_reason = 'complete'
                 break
 
+        if exit_reason == 'complete':
+            self._execute_return_to_depot()
+
         covered   = sum(self.is_covered)
         remaining = [t for t, c in enumerate(self.is_covered) if not c]
         print(f'[DES_GREEDY_EXIT] reason={exit_reason}  sim_time={self.sim_time:.2f}'
@@ -136,6 +142,16 @@ class DESGreedySimulation:
 
         if not robot.is_current_goal_version(goal_version):
             return
+
+        # Log the completed leg before clearing the goal
+        if self.logger and robot_id in self._pending_leg:
+            fp, ft, fk = self._pending_leg.pop(robot_id)
+            self.logger.log_robot_leg(
+                ft, robot_id,
+                fp[0], fp[1],
+                robot._goal[0], robot._goal[1],
+                fk, self.sim_time,
+            )
 
         robot._leg_start_pos  = robot._goal
         robot._leg_start_time = self.sim_time
@@ -170,11 +186,34 @@ class DESGreedySimulation:
         Global greedy assignment.  Agents processed in ascending ID order
         so lower IDs have priority when tasks are equidistant.
         Each agent picks the nearest uncovered, unclaimed task.
+
+        Robots that are already physically en route to an uncovered task keep
+        that task (it is pre-claimed) so they are never rerouted toward the
+        same destination as another robot.
         """
         claimed: set = set()
+
+        # Pre-claim tasks for robots already in transit so they cannot be
+        # stolen by a lower-priority agent during this reassignment pass.
         for agent in self.agents:
+            if not agent.is_alive:
+                continue
+            robot = self.robots[agent.agent_id]
+            task  = agent.current_task
+            if (task is not None
+                    and not self.is_covered[task]
+                    and robot._goal == tuple(self.problem.task_poses[task])):
+                claimed.add(task)
+
+        for agent in self.agents:
+            if not agent.is_alive:
+                agent.current_task = None
+                continue
             # Update robot pose from DESRobot before selecting
             agent.robot_poses[agent.agent_id] = self.robots[agent.agent_id].get_position(self.sim_time)
+            # Keep existing assignment if already in transit to it
+            if agent.current_task is not None and agent.current_task in claimed:
+                continue
             agent.select_task(claimed)
             if agent.current_task is not None:
                 claimed.add(agent.current_task)
@@ -193,7 +232,16 @@ class DESGreedySimulation:
 
         if task is None or self.is_covered[task]:
             if robot._goal is not None:
-                robot._leg_start_pos  = robot.get_position(self.sim_time)
+                current_pos           = robot.get_position(self.sim_time)
+                if self.logger and robot_id in self._pending_leg:
+                    fp, ft, fk = self._pending_leg.pop(robot_id)
+                    self.logger.log_robot_leg(
+                        ft, robot_id,
+                        fp[0], fp[1],
+                        current_pos[0], current_pos[1],
+                        fk, self.sim_time,
+                    )
+                robot._leg_start_pos  = current_pos
                 robot._leg_start_time = self.sim_time
                 robot._goal           = None
                 robot._goal_version  += 1
@@ -204,22 +252,49 @@ class DESGreedySimulation:
         if robot._goal == goal:
             return
 
-        current_pos        = robot.get_position(self.sim_time)
-        arrival, version   = robot.set_goal(goal, self.sim_time)
+        current_pos = robot.get_position(self.sim_time)
+
+        if self.logger and robot_id in self._pending_leg:
+            fp, ft, fk = self._pending_leg.pop(robot_id)
+            self.logger.log_robot_leg(
+                ft, robot_id,
+                fp[0], fp[1],
+                current_pos[0], current_pos[1],
+                fk, self.sim_time,
+            )
+
+        arrival, version = robot.set_goal(goal, self.sim_time)
 
         if self.logger:
-            self.logger.log_robot_leg(
-                self.sim_time, robot_id,
-                current_pos[0], current_pos[1],
-                goal[0], goal[1],
-                task, arrival,
-            )
+            self._pending_leg[robot_id] = (current_pos, self.sim_time, task)
 
         self.queue.push(arrival, EventType.ROBOT_ARRIVAL, {
             'robot_id':     robot_id,
             'task_id':      task,
             'goal_version': version,
         })
+
+    def _execute_return_to_depot(self) -> None:
+        """Advance sim_time by the longest return leg back to each robot's start."""
+        import math
+        max_return = 0.0
+        for robot in self.robots:
+            if not robot.is_alive:
+                continue
+            pos = robot.get_position(self.sim_time)
+            start = self.robot_starts[robot.robot_id]
+            dist = math.hypot(pos[0] - start[0], pos[1] - start[1])
+            return_time = dist / robot.speed if robot.speed > 0 else 0.0
+            if self.logger:
+                self.logger.log_robot_leg(
+                    self.sim_time, robot.robot_id,
+                    pos[0], pos[1],
+                    start[0], start[1],
+                    -2,
+                    self.sim_time + return_time,
+                )
+            max_return = max(max_return, return_time)
+        self.sim_time += max_return
 
     # ------------------------------------------------------------------ #
     # Kill / Revive                                                        #
@@ -246,19 +321,29 @@ class DESGreedySimulation:
         for robot_id in targets:
             self.killed_robots.add(robot_id)
             stop_pos = self.robots[robot_id].get_position(self.sim_time)
+
+            # Log the partial leg that was interrupted by the kill
+            if self.logger and robot_id in self._pending_leg:
+                fp, ft, fk = self._pending_leg.pop(robot_id)
+                self.logger.log_robot_leg(
+                    ft, robot_id,
+                    fp[0], fp[1],
+                    stop_pos[0], stop_pos[1],
+                    fk, self.sim_time,
+                )
+
             self.robots[robot_id].kill(self.sim_time)
+
+            # Start the dead robot travelling back to its depot.
+            depot = tuple(self.robot_starts[robot_id])
+            self.robots[robot_id].set_goal(depot, self.sim_time)
+            if self.logger:
+                self._pending_leg[robot_id] = (stop_pos, self.sim_time, -1)
 
             for agent in self.agents:
                 agent.kill_robot(robot_id)
 
             if self.logger:
-                self.logger.log_robot_leg(
-                    sim_time=self.sim_time,
-                    robot_id=robot_id,
-                    from_x=stop_pos[0], from_y=stop_pos[1],
-                    to_x=stop_pos[0],   to_y=stop_pos[1],
-                    task_id=-1, arrival_sim_time=self.sim_time,
-                )
                 self.logger.robot_killed(self.sim_time, robot_id)
 
         self._assign_tasks_greedy()
@@ -271,8 +356,16 @@ class DESGreedySimulation:
         self._is_revive_triggered = True
         revived = sorted(self.killed_robots)
         for robot_id in revived:
-            self.robots[robot_id].revive()
             revived_pos = self.robots[robot_id].get_position(self.sim_time)
+            if self.logger and robot_id in self._pending_leg:
+                fp, ft, fk = self._pending_leg.pop(robot_id)
+                self.logger.log_robot_leg(
+                    ft, robot_id,
+                    fp[0], fp[1],
+                    revived_pos[0], revived_pos[1],
+                    fk, self.sim_time,
+                )
+            self.robots[robot_id].revive()
             for agent in self.agents:
                 agent.revive_robot(robot_id)
                 agent.robot_poses[robot_id] = revived_pos

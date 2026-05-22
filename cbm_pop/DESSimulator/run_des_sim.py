@@ -61,8 +61,11 @@ def parse_args():
                    help='Time discount strength λ (default: 0.1)')
     p.add_argument('--is_free_weight_matrix', action='store_true',
                    help='Use free (all-ones) weight matrix instead of classical')
+    p.add_argument('--init_method', type=str, default='voronoi',
+                   choices=['voronoi', 'greedy', 'random'],
+                   help='Population initialisation method (default: voronoi)')
     p.add_argument('--random_init', action='store_true',
-                   help='Initialise population randomly instead of with Voronoi heuristic')
+                   help='Initialise population randomly (legacy alias for --init_method random)')
     p.add_argument('--no_knn',             action='store_true',
                    help='Disable KNN operator')
     p.add_argument('--no_mimetism',        action='store_true')
@@ -119,6 +122,7 @@ def main():
         time_discount=args.time_discount,
         time_discount_lambda=args.time_discount_lambda,
         is_free_weight_matrix=args.is_free_weight_matrix,
+        init_method='random' if args.random_init else args.init_method,
         initialise_with_heuristic=not args.random_init,
         is_knn_enabled=not args.no_knn,
         is_mimetism_enabled=not args.no_mimetism,
