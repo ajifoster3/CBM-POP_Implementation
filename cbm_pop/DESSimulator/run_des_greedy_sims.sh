@@ -37,7 +37,7 @@ slug() {
 }
 
 MAX_ATTEMPTS=3
-TIMEOUT_SECONDS=3600
+TIMEOUT_SECONDS=10800
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 

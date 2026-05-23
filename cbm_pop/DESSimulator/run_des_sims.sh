@@ -44,7 +44,7 @@ slug() {
 
 # ===== Configuration =====
 MAX_ATTEMPTS=3          # retries per run before giving up
-TIMEOUT_SECONDS=3600    # wall-clock timeout per run (seconds)
+TIMEOUT_SECONDS=10800   # wall-clock timeout per run (seconds)
 RESULTS_ROOT="resources/run_logs"
 mkdir -p "$RESULTS_ROOT"
 

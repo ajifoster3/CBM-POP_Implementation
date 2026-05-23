@@ -18,6 +18,7 @@ Parallelism model
   each operator determines how far ahead in sim time that agent's result lands.
 """
 
+import math
 from copy import deepcopy
 from typing import List, Optional, Tuple
 
@@ -529,11 +530,14 @@ class DESSimulation:
             revived_pos = self.robots[robot_id].get_position(self.sim_time)
             if self.logger and robot_id in self._pending_leg:
                 fp, ft, fk = self._pending_leg.pop(robot_id)
+                _dist = math.hypot(revived_pos[0] - fp[0], revived_pos[1] - fp[1])
+                _speed = self.robots[robot_id].speed
+                _depot_arrival = ft + (_dist / _speed if _speed > 0 else 0.0)
                 self.logger.log_robot_leg(
                     ft, robot_id,
                     fp[0], fp[1],
                     revived_pos[0], revived_pos[1],
-                    fk, self.sim_time,
+                    fk, _depot_arrival,
                 )
             self.robots[robot_id].revive()
             for agent in self.agents:
