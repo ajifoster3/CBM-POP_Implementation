@@ -293,7 +293,7 @@ class DESAgent:
             self.di_cycle_start_solution = deepcopy(self.current_solution)
         cycle_start_f = self.fitness(self.di_cycle_start_solution, snap)
         loc_f  = self.fitness(self.local_best_solution)
-        coal_f = self.fitness(self.coalition_best_solution)
+        coal_f = self.fitness(self.coalition_best_solution, snap)
 
         gain       = new_f - cur_f
         cycle_gain = new_f - cycle_start_f
@@ -466,13 +466,102 @@ class DESAgent:
         """
         React to robot_id being revived.
 
-        The failed robot's alloc slot still exists (at 0) in all solutions, so
-        no structural change is needed — operators will naturally repopulate it.
+        The failed robot's alloc slot still exists (at 0) in surviving agents'
+        solutions, so no structural change is needed for them.  If this is the
+        revived agent itself, clear any stale pre-failure assignment from its
+        own local solution state so it waits until optimisation assigns it new
+        work after revival.
         """
         self.failed_agents[robot_id] = False
         if robot_id == self.agent_id:
             self.is_alive = True
+            self._clear_self_assignment_after_revive()
         self._assign_next_task(self.coalition_best_solution)
+
+    def reinitialise_population(self, seed_solution=None,
+                                committed_positions=None,
+                                committed_times=None) -> None:
+        """
+        Rebuild the population after a fleet change.
+
+        If seed_solution is provided (e.g. a repaired coalition-best), the
+        population is generated as perturbations of that seed so that
+        optimization quality earned before the event is preserved.
+        Otherwise a fresh heuristic population is generated from scratch.
+
+        committed_positions : dict {robot_id -> (x, y)} — where each surviving
+            robot will *be* when it finishes its current committed travel leg.
+            Used by the greedy init instead of the mid-travel interpolated pose.
+        committed_times : dict {robot_id -> float} — remaining travel time for
+            each surviving robot (0.0 if already idle).
+
+        Preserves learned weights (weight matrix / UCB bandit).
+        """
+        if seed_solution is not None and seed_solution[0]:
+            self.population = self._generate_population_from_seed(seed_solution)
+            self.coalition_best_solution = deepcopy(seed_solution)
+        else:
+            self.population = self._generate_population(
+                committed_positions=committed_positions,
+                committed_times=committed_times,
+            )
+            _, best = self._select_solution()
+            self.coalition_best_solution = deepcopy(best)
+        self.current_parent_idx, self.current_solution = self._select_solution()
+        self.local_best_solution = None
+        self.di_cycle_start_solution = None
+        self.di_cycle_count = 0
+        self.no_improvement_attempt_count = 0
+        self._reset_task_lock_state()
+        self.current_task = None
+        self._assign_next_task(self.coalition_best_solution)
+
+    def _generate_population_from_seed(self, base: tuple) -> list:
+        """Build a population of perturbations around a given base solution."""
+        population = [deepcopy(base)]
+        num_tasks = len(base[0])
+        for _ in range(1, self.pop_size):
+            num_swaps = random.randint(1, max(1, num_tasks // 4))
+            population.append(self._perturb_solution(base, num_swaps))
+        return population
+
+    def _clear_self_assignment_after_revive(self) -> None:
+        recipient_id = next(
+            (idx for idx, failed in enumerate(self.failed_agents)
+             if idx != self.agent_id and not failed),
+            None,
+        )
+
+        def _clear(solution):
+            if solution is None or not solution[0]:
+                return solution
+            order, alloc = list(solution[0]), list(solution[1])
+            if self.agent_id >= len(alloc) or alloc[self.agent_id] == 0:
+                return (order, alloc)
+
+            start = sum(alloc[:self.agent_id])
+            end = start + alloc[self.agent_id]
+            stale_tasks = order[start:end]
+            del order[start:end]
+            alloc[self.agent_id] = 0
+
+            if recipient_id is not None and recipient_id < len(alloc):
+                dest_idx = sum(alloc[:recipient_id])
+                if dest_idx > len(order):
+                    dest_idx = len(order)
+                order[dest_idx:dest_idx] = stale_tasks
+                alloc[recipient_id] += len(stale_tasks)
+
+            return (order, alloc)
+
+        self.coalition_best_solution = _clear(self.coalition_best_solution)
+        self.current_solution        = _clear(self.current_solution)
+        self.local_best_solution     = _clear(self.local_best_solution)
+        self.di_cycle_start_solution = _clear(self.di_cycle_start_solution)
+        if self.population:
+            self.population = [_clear(s) for s in self.population]
+        self._reset_task_lock_state()
+        self.current_task = None
 
     # ------------------------------------------------------------------ #
     # Task assignment                                                      #
@@ -539,13 +628,17 @@ class DESAgent:
 
     def _voronoi_partition(self) -> list:
         tasks_per_agent = [[] for _ in range(self.num_agents)]
-        robot_xy = np.array(self.robot_poses, dtype=float)
+        alive = [a for a in range(self.num_agents)
+                 if not self.failed_agents[a] and self.robot_poses[a] is not None]
+        if not alive:
+            return tasks_per_agent
+        robot_xy = np.array([self.robot_poses[a] for a in alive], dtype=float)
         task_xy  = np.array(self.problem.task_poses, dtype=float)
         dists    = ((task_xy[:, None, :] - robot_xy[None, :, :]) ** 2).sum(axis=2)
         nearest  = np.argmin(dists, axis=1)
-        for t, a in enumerate(nearest):
+        for t, idx in enumerate(nearest):
             if not self.is_covered[t]:
-                tasks_per_agent[a].append(t)
+                tasks_per_agent[alive[idx]].append(t)
         return tasks_per_agent
 
     def _nn_order(self, tasks: list, start_xy: tuple) -> list:
@@ -564,7 +657,8 @@ class DESAgent:
         return [tasks[i] for i in order]
 
     def _ensure_min_one(self, per_agent_routes: list) -> None:
-        needers = [a for a, r in enumerate(per_agent_routes) if not r]
+        needers = [a for a, r in enumerate(per_agent_routes)
+                   if not r and not self.failed_agents[a] and self.robot_poses[a] is not None]
         donors  = {i for i, r in enumerate(per_agent_routes) if len(r) > 1}
         for a in needers:
             if not donors:
@@ -580,10 +674,13 @@ class DESAgent:
             if len(per_agent_routes[src]) <= 1:
                 donors.discard(src)
 
-    def _generate_population(self) -> list:
+    def _generate_population(self, committed_positions=None, committed_times=None) -> list:
         """Dispatch to heuristic or random initialisation based on agent config."""
         if self.init_method == 'greedy':
-            return self._generate_population_greedy()
+            return self._generate_population_greedy(
+                committed_positions=committed_positions,
+                committed_times=committed_times,
+            )
         if self.init_method == 'random' or not self.initialise_with_heuristic:
             return self._generate_population_random()
         return self._generate_population_voronoi()
@@ -591,11 +688,14 @@ class DESAgent:
     def _generate_population_random(self) -> list:
         """Randomly assign and order uncovered tasks — no Voronoi bias."""
         uncovered = [t for t, c in enumerate(self.is_covered) if not c]
+        alive = [a for a in range(self.num_agents) if not self.failed_agents[a]]
+        if not alive:
+            return []
         population = []
         for _ in range(self.pop_size):
             tasks = uncovered[:]
             random.shuffle(tasks)
-            assignment = [random.randrange(self.num_agents) for _ in tasks]
+            assignment = [random.choice(alive) for _ in tasks]
             order, alloc = [], [0] * self.num_agents
             for agent in range(self.num_agents):
                 agent_tasks = [t for t, a in zip(tasks, assignment) if a == agent]
@@ -656,7 +756,8 @@ class DESAgent:
             population.append(self._perturb_solution(base, num_swaps))
         return population
 
-    def _generate_population_greedy(self) -> list:
+    def _generate_population_greedy(self, committed_positions=None,
+                                     committed_times=None) -> list:
         """
         Time-aware greedy construction: at each step assign the (robot, task) pair
         with the earliest simulated arrival time.
@@ -669,6 +770,12 @@ class DESAgent:
         This mirrors what the online greedy DES does — a robot that already has a
         long chain of assignments will not keep stealing nearby tasks from an idle
         robot that can reach them sooner.
+
+        committed_positions : dict {robot_id -> (x, y)} — where each surviving
+            robot will be once it finishes its current committed travel leg.
+            Overrides the mid-travel interpolated pose for that robot.
+        committed_times : dict {robot_id -> float} — remaining travel time before
+            the robot becomes free.  Overrides the default 0.0 for that robot.
         """
         import math
 
@@ -683,6 +790,18 @@ class DESAgent:
         robot_positions = [list(p) if p is not None else [0.0, 0.0]
                            for p in self.robot_poses]
         time_available = [0.0] * self.num_agents
+
+        # Override with committed travel state when provided.
+        # A robot mid-travel will not be free at its current (interpolated)
+        # position — it will be free at its goal once the remaining leg finishes.
+        if committed_positions:
+            for rid, pos in committed_positions.items():
+                if 0 <= rid < len(robot_positions) and pos is not None:
+                    robot_positions[rid] = list(pos)
+        if committed_times:
+            for rid, t in committed_times.items():
+                if 0 <= rid < len(time_available):
+                    time_available[rid] = float(t)
         per_agent_routes: list = [[] for _ in range(self.num_agents)]
         unassigned: set = set(uncovered)
 

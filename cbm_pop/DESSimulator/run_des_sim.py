@@ -187,8 +187,7 @@ def main():
     print(f'  tasks covered : {summary["tasks_covered"]} / {summary["total_tasks"]}')
     print(f'  complete      : {summary["complete"]}')
     print(f'  iterations    : {summary["iterations_per_agent"]}')
-    print(f'  coalition fit : '
-          f'{[f"{f:.3f}" for f in summary["coalition_fitness"]]}')
+    print(f'  best coalition fitness : {summary["best_coalition_fitness"]:.4f}')
     sys.stdout.flush()
     try:
         import os

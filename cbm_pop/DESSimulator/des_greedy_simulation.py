@@ -11,6 +11,7 @@ side-by-side.  operator_log.csv / di_cycle_log.csv / weight_matrix_log.csv
 will be created with headers but no data rows.
 """
 
+import math
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -156,6 +157,9 @@ class DESGreedySimulation:
         robot._leg_start_pos  = robot._goal
         robot._leg_start_time = self.sim_time
         robot._goal           = None
+
+        if task_id < 0:
+            return
 
         if not self.is_covered[task_id]:
             self.is_covered[task_id] = True
@@ -336,9 +340,14 @@ class DESGreedySimulation:
 
             # Start the dead robot travelling back to its depot.
             depot = tuple(self.robot_starts[robot_id])
-            self.robots[robot_id].set_goal(depot, self.sim_time)
+            arrival, version = self.robots[robot_id].set_goal(depot, self.sim_time)
             if self.logger:
                 self._pending_leg[robot_id] = (stop_pos, self.sim_time, -1)
+            self.queue.push(arrival, EventType.ROBOT_ARRIVAL, {
+                'robot_id':     robot_id,
+                'task_id':      -1,
+                'goal_version': version,
+            })
 
             for agent in self.agents:
                 agent.kill_robot(robot_id)
@@ -359,11 +368,14 @@ class DESGreedySimulation:
             revived_pos = self.robots[robot_id].get_position(self.sim_time)
             if self.logger and robot_id in self._pending_leg:
                 fp, ft, fk = self._pending_leg.pop(robot_id)
+                _dist = math.hypot(revived_pos[0] - fp[0], revived_pos[1] - fp[1])
+                _speed = self.robots[robot_id].speed
+                _depot_arrival = ft + (_dist / _speed if _speed > 0 else 0.0)
                 self.logger.log_robot_leg(
                     ft, robot_id,
                     fp[0], fp[1],
                     revived_pos[0], revived_pos[1],
-                    fk, self.sim_time,
+                    fk, _depot_arrival,
                 )
             self.robots[robot_id].revive()
             for agent in self.agents:
