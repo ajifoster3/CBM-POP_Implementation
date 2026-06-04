@@ -34,8 +34,8 @@ class LearningMethod(Enum):
     Q_LEARNING          = 'Q-Learning'
     Q_LEARNING_STEP     = 'Q-Learning-Step'
     Q_LEARNING_SEPARATE = 'Q-Learning-Separate'
-    Q_LEARNING_GAIN          = 'Q-Learning-improveoncurrent'            # reward = improvement over DI-cycle start
-    Q_LEARNING_STEP_GAIN     = 'Q-Learning-Step-improveoncurrent'       # Step variant with immediate-current reward
+    Q_LEARNING_GAIN          = 'Q-Learning-improveoncurrent'            # reward = improvement over current solution (per-step, moving target)
+    Q_LEARNING_STEP_GAIN     = 'Q-Learning-Step-improveoncurrent'       # reward = improvement over DI-cycle start (per-step, fixed baseline)
     Q_LEARNING_SEPARATE_GAIN = 'Q-Learning-Separate-improveoncurrent'   # Separate variant with immediate-current reward
     FERREIRA            = 'Ferreira_et_al.'
     UCB                 = 'UCB'
@@ -178,8 +178,9 @@ class DESAgent:
         self.di_cycle_total:           int  = 0
         self.iteration_count:          int  = 0
         self.no_improvement_attempt_count: int = 0
-        self.best_local_improved:      bool = False
-        self.best_coalition_improved:  bool = False
+        self.best_local_improved:        bool = False
+        self.best_coalition_improved:    bool = False
+        self.best_cycle_start_improved:  bool = False
         self.current_parent_idx:       Optional[int] = None
         self._current_sim_time:        float = 0.0
 
@@ -301,9 +302,9 @@ class DESAgent:
             self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
         elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE
               and step.operator in self.intensifiers):
-            self._learning_step(step.condition, op_idx, step_improved_local, gain, step.wall_time)
+            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_GAIN:
-            self._learning_step(step.condition, op_idx, step_improved_cycle_start, cycle_gain, step.wall_time)
+            self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif self.learning_method == LearningMethod.Q_LEARNING_STEP_GAIN:
             self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif (self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN
@@ -311,6 +312,8 @@ class DESAgent:
             self._learning_step(step.condition, op_idx, step_improved_current, gain, step.wall_time)
         elif self.learning_method == LearningMethod.UCB:
             self.ucb_bandit.update(op_idx, self._apply_time_discount(-gain, gain, step.wall_time))
+        if step_improved_cycle_start:
+            self.best_cycle_start_improved = True
         if step_improved_local:
             self.local_best_solution  = deepcopy(result)
             self.best_local_improved  = True
@@ -1038,12 +1041,17 @@ class DESAgent:
         q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
         self.weight_matrix.weights[condition][op_idx] = max(q_new, 1e-6)
 
-    def _learning_qlearning(self, diversifiers_only: bool = False) -> None:
-        """Cycle-end Q-learning update (Q_LEARNING and Q_LEARNING_SEPARATE diversifiers)."""
+    def _learning_qlearning(self, diversifiers_only: bool = False,
+                            improved: Optional[bool] = None) -> None:
+        """Cycle-end Q-learning update (Q_LEARNING and Q_LEARNING_SEPARATE diversifiers).
+
+        improved: override the reward signal; defaults to self.best_local_improved.
+        """
         min_idx = self._best_episode_cutoff()
         n_int   = len(self.intensifiers)
         seen    = set()
-        reward  = self.positive_reward if self.best_local_improved else self.negative_reward
+        _improved = improved if improved is not None else self.best_local_improved
+        reward  = self.positive_reward if _improved else self.negative_reward
         for i in range(min_idx):
             cond, op_col, _ = self.previous_experience[i]
             op_col = int(op_col)
@@ -1082,12 +1090,13 @@ class DESAgent:
         if self.learning_method == LearningMethod.Q_LEARNING:
             self._learning_qlearning(diversifiers_only=False)
         elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE:
-            self._learning_qlearning(diversifiers_only=True)
+            self._learning_qlearning(diversifiers_only=True,
+                                     improved=self.best_cycle_start_improved)
         elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN:
             self._learning_qlearning(diversifiers_only=True)
         elif self.learning_method == LearningMethod.FERREIRA:
             self._learning_ferreira()
-        # Q_LEARNING_STEP, Q_LEARNING_STEP_GAIN, Q_LEARNING_GAIN, UCB, UNIFORM: no cycle-end weight update
+        # Q_LEARNING_SEPARATE, Q_LEARNING_STEP, Q_LEARNING_STEP_GAIN, Q_LEARNING_GAIN, UCB, UNIFORM: no cycle-end weight update
 
         _mimetism_applicable = self.learning_method not in (
             LearningMethod.UCB, LearningMethod.UNIFORM
@@ -1135,7 +1144,8 @@ class DESAgent:
         self.previous_experience     = []
         self.di_cycle_start_solution = None
         self.di_cycle_count          = 0
-        self.best_local_improved     = False
-        self.best_coalition_improved = False
+        self.best_local_improved        = False
+        self.best_coalition_improved    = False
+        self.best_cycle_start_improved  = False
 
         return weights_to_share
