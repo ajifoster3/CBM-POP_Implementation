@@ -49,7 +49,6 @@ class StepData:
     operator:  Operator
     condition: int
     wall_time: float          # measured operator wall time (seconds)
-    robot_cost_matrix_snapshot: Optional[list] = None  # robot positions at compute time
 
 
 class DESAgent:
@@ -254,18 +253,12 @@ class DESAgent:
                 self.weight_matrix.weights, condition, enabled
             )
 
-        snapshot = (
-            [list(row) for row in self.problem.current_robot_cost_matrix]
-            if self.problem.current_robot_cost_matrix is not None else None
-        )
-
         t0        = _wall.process_time()
         result    = self._apply_operator(operator)
         wall_time = max(_wall.process_time() - t0, 1e-9)
 
         return StepData(result=result, operator=operator,
-                        condition=condition, wall_time=wall_time,
-                        robot_cost_matrix_snapshot=snapshot)
+                        condition=condition, wall_time=wall_time)
 
     def apply_step_result(self, step: StepData, sim_time: float = 0.0) -> bool:
         """
@@ -286,14 +279,13 @@ class DESAgent:
             return False
 
         num_uncovered = sum(1 for c in self.is_covered if not c)
-        snap = step.robot_cost_matrix_snapshot
-        new_f  = self.fitness(result, snap)
-        cur_f  = self.fitness(self.current_solution, snap)
+        new_f         = self.fitness(result)
+        cur_f         = self.fitness(self.current_solution)
         if self.di_cycle_start_solution is None:
             self.di_cycle_start_solution = deepcopy(self.current_solution)
-        cycle_start_f = self.fitness(self.di_cycle_start_solution, snap)
-        loc_f  = self.fitness(self.local_best_solution)
-        coal_f = self.fitness(self.coalition_best_solution, snap)
+        cycle_start_f = self.fitness(self.di_cycle_start_solution)
+        loc_f         = self.fitness(self.local_best_solution)
+        coal_f        = self.fitness(self.coalition_best_solution)
 
         gain       = new_f - cur_f
         cycle_gain = new_f - cycle_start_f
@@ -352,7 +344,7 @@ class DESAgent:
         self.di_cycle_count += 1
 
         weights_to_share = None
-        if self.di_cycle_count >= self.di_cycle_length:
+        if self.di_cycle_count >= self.di_cycle_length or self._check_stagnation():
             weights_to_share = self._finish_di_cycle()
 
         return coalition_improved, weights_to_share
@@ -981,6 +973,26 @@ class DESAgent:
     # ------------------------------------------------------------------ #
     # DI-cycle learning                                                    #
     # ------------------------------------------------------------------ #
+
+    def _check_stagnation(self) -> bool:
+        """True when the last two history entries are both non-improving intensifications.
+
+        Implements the stagnation termination condition of Eq. (4):
+            (op(H_{k-2}) ∈ I ∧ g(H_{k-2}) ≤ 0) ∧ (op(H_{k-1}) ∈ I ∧ g(H_{k-1}) ≤ 0)
+
+        Note: in the code gain = new_f − cur_f, so gain >= 0 means no improvement
+        (the paper defines gain as F(before) − F(after), flipping the sign).
+        Requires at least 2 history entries (|H| ≥ 2); the paper notes evaluation
+        is only possible from the third step onwards (|H| ≥ 3), which is equivalent
+        here because we check the two most recent entries after appending the current one.
+        """
+        if len(self.previous_experience) < 2:
+            return False
+        n_int = len(self.intensifiers)
+        for _, op_idx, gain in self.previous_experience[-2:]:
+            if int(op_idx) >= n_int or gain < 0:
+                return False
+        return True
 
     # ------------------------------------------------------------------ #
     # Learning methods                                                     #
