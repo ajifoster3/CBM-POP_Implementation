@@ -58,7 +58,8 @@ ucb-c:,ucb-window:,time-discount:,time-discount-lambda:,is-free-weight-matrix:,\
 is-knn-enabled:,is-mimetism-enabled:,is-inject-best-on-cycle:,inject-best-prob:,\
 is-append-first-task:,random-init:,init-method:,init_method:,compute-time-scale:,\
 progress-interval:,output-root:,\
-enable-kill:,kill-threshold:,num-to-kill:,enable-revive:,revive-threshold: \
+enable-kill:,kill-threshold:,num-to-kill:,enable-revive:,revive-threshold:,\
+persist-weights:,weights-dir: \
   -- "$@") || { echo "Invalid options"; exit 1; }
 eval set -- "$PARSED"
 
@@ -104,6 +105,8 @@ while true; do
     --num-to-kill)                NUM_TO_KILL="$2";             shift 2 ;;
     --enable-revive)              ENABLE_REVIVE="$2";           shift 2 ;;
     --revive-threshold)           REVIVE_THRESHOLD="$2";        shift 2 ;;
+    --persist-weights)            PERSIST_WEIGHTS="$2";         shift 2 ;;
+    --weights-dir)                WEIGHTS_DIR="$2";             shift 2 ;;
     --) shift; break ;;
     *) echo "Unexpected option: $1"; exit 1 ;;
   esac
@@ -150,6 +153,8 @@ KILL_THRESHOLD=${KILL_THRESHOLD:-0.2}
 NUM_TO_KILL=${NUM_TO_KILL:-1}
 ENABLE_REVIVE=${ENABLE_REVIVE:-"false"}
 REVIVE_THRESHOLD=${REVIVE_THRESHOLD:-0.8}
+PERSIST_WEIGHTS=${PERSIST_WEIGHTS:-"false"}
+WEIGHTS_DIR=${WEIGHTS_DIR:-""}
 
 require_bool() {
   local _name="$1" _value="$2"
@@ -171,6 +176,7 @@ require_bool "is_append_first_task" "$IS_APPEND_FIRST_TASK"
 require_bool "random_init" "$RANDOM_INIT"
 require_bool "enable_kill" "$ENABLE_KILL"
 require_bool "enable_revive" "$ENABLE_REVIVE"
+require_bool "persist_weights" "$PERSIST_WEIGHTS"
 
 # ===== Directory layout =====
 ENV_SUFFIX=""
@@ -179,6 +185,12 @@ ENV_SUFFIX=""
 ENV_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")${ENV_SUFFIX}"
 PARAM_DIR="$ENV_DIR/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_ucbc_${UCB_C}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_append_${IS_APPEND_FIRST_TASK}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_init_${INIT_METHOD}_ctscale_${COMPUTE_TIME_SCALE}_tdiscount_${TIME_DISCOUNT}_tdlambda_${TIME_DISCOUNT_LAMBDA}"
 mkdir -p "$PARAM_DIR"
+
+# If --persist-weights true and no explicit --weights-dir, auto-place weights
+# inside PARAM_DIR so they are colocated with results for this config/trajectory.
+if [[ "$PERSIST_WEIGHTS" == "true" ]] && [[ -z "$WEIGHTS_DIR" ]]; then
+    WEIGHTS_DIR="${PARAM_DIR}/weights"
+fi
 
 # ===== Helpers =====
 
@@ -218,6 +230,8 @@ write_param_tag() {
     echo "num_to_kill=${NUM_TO_KILL}"
     echo "enable_revive=${ENABLE_REVIVE}"
     echo "revive_threshold=${REVIVE_THRESHOLD}"
+    echo "persist_weights=${PERSIST_WEIGHTS}"
+    echo "weights_dir=${WEIGHTS_DIR}"
     echo "created_iso=$(date -Is)"
   } > "$_dir/setting_tag.txt"
 }
@@ -259,6 +273,8 @@ write_run_settings() {
     echo "num_to_kill=${NUM_TO_KILL}"
     echo "enable_revive=${ENABLE_REVIVE}"
     echo "revive_threshold=${REVIVE_THRESHOLD}"
+    echo "persist_weights=${PERSIST_WEIGHTS}"
+    echo "weights_dir=${WEIGHTS_DIR}"
     echo "timeout_seconds=${TIMEOUT_SECONDS}"
     echo "run_uid=${_uid}"
     echo "start_iso=$(date -Is)"
@@ -328,6 +344,7 @@ build_des_cmd() {
   [[ "$ENABLE_KILL"          == "true"  ]] && CMD+=( --num_to_kill     "$NUM_TO_KILL" )
   [[ "$ENABLE_REVIVE"        == "true"  ]] && CMD+=( --enable_revive )
   [[ "$ENABLE_REVIVE"        == "true"  ]] && CMD+=( --revive_threshold "$REVIVE_THRESHOLD" )
+  [[ -n "$WEIGHTS_DIR"                 ]] && CMD+=( --weights_dir "$WEIGHTS_DIR" )
   echo "${CMD[@]}"
 }
 

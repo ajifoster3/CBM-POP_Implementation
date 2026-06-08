@@ -1149,3 +1149,64 @@ class DESAgent:
         self.best_cycle_start_improved  = False
 
         return weights_to_share
+
+    # ------------------------------------------------------------------ #
+    # Weight persistence                                                   #
+    # ------------------------------------------------------------------ #
+
+    def save_weights(self, path: str) -> None:
+        """Persist learned policy state to a JSON file.
+
+        For Q-learning methods: saves the weight matrix.
+        For UCB: saves the per-operator reward history and global pull count.
+        """
+        import json
+        import os
+
+        data = {
+            "method": self.learning_method.value,
+            "num_intensifiers": len(self.intensifiers),
+            "num_diversifiers": len(self.diversifiers),
+        }
+        if self.learning_method == LearningMethod.UCB:
+            data["ucb_history"] = [list(h) for h in self.ucb_bandit._history]
+            data["ucb_N"] = self.ucb_bandit.N
+        else:
+            data["weight_matrix"] = [list(row) for row in self.weight_matrix.weights]
+
+        dir_name = os.path.dirname(path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f)
+
+    def load_weights(self, path: str) -> None:
+        """Load and apply policy state from a JSON file produced by save_weights().
+
+        Raises ValueError if the method or operator dimensions do not match.
+        """
+        import json
+
+        with open(path, 'r') as f:
+            data = json.load(f)
+
+        if data["method"] != self.learning_method.value:
+            raise ValueError(
+                f"Weight file method '{data['method']}' does not match "
+                f"agent method '{self.learning_method.value}'"
+            )
+        n_int = data["num_intensifiers"]
+        n_div = data["num_diversifiers"]
+        if n_int != len(self.intensifiers) or n_div != len(self.diversifiers):
+            raise ValueError(
+                f"Weight file shape ({n_int} int, {n_div} div) does not match "
+                f"agent shape ({len(self.intensifiers)} int, {len(self.diversifiers)} div)"
+            )
+
+        if self.learning_method == LearningMethod.UCB:
+            for i, history in enumerate(data["ucb_history"]):
+                self.ucb_bandit._history[i].clear()
+                self.ucb_bandit._history[i].extend(history)
+            self.ucb_bandit.N = data["ucb_N"]
+        else:
+            self.weight_matrix.weights = [list(row) for row in data["weight_matrix"]]

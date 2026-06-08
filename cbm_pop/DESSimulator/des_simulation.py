@@ -46,6 +46,7 @@ class DESSimulation:
         num_to_kill:        int   = 1,
         enable_revive:      bool  = False,
         revive_threshold:   float = 0.8,
+        weights_dir:        Optional[str]  = None,
     ):
         self.problem            = problem
         self.num_agents         = num_agents
@@ -59,6 +60,8 @@ class DESSimulation:
         self.num_to_kill      = min(num_to_kill, num_agents)
         self.enable_revive    = enable_revive
         self.revive_threshold = revive_threshold
+
+        self.weights_dir          = weights_dir
 
         self.killed_robots:       set  = set()
         self._is_kill_triggered:  bool = False
@@ -95,6 +98,17 @@ class DESSimulation:
 
         for agent in self.agents:
             agent.initialise(starts)
+
+        if weights_dir is not None:
+            import os
+            for agent in self.agents:
+                path = os.path.join(weights_dir, f"agent_{agent.agent_id}_weights.json")
+                if os.path.exists(path):
+                    try:
+                        agent.load_weights(path)
+                        print(f"[weights] loaded agent {agent.agent_id} from {path}")
+                    except Exception as exc:
+                        print(f"[weights] WARNING: could not load {path}: {exc}")
 
         self._broadcast_best_initial_solution()
 
@@ -169,7 +183,20 @@ class DESSimulation:
               f'  uncovered_tasks={remaining[:20]}{"..." if len(remaining) > 20 else ""}',
               flush=True)
 
-        return self._summary()
+        summary = self._summary()
+
+        if self.weights_dir is not None:
+            import os
+            os.makedirs(self.weights_dir, exist_ok=True)
+            for agent in self.agents:
+                path = os.path.join(self.weights_dir, f"agent_{agent.agent_id}_weights.json")
+                try:
+                    agent.save_weights(path)
+                    print(f"[weights] saved agent {agent.agent_id} to {path}")
+                except Exception as exc:
+                    print(f"[weights] WARNING: could not save {path}: {exc}")
+
+        return summary
 
     # ------------------------------------------------------------------ #
     # Event handlers                                                       #

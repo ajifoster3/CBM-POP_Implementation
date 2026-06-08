@@ -92,6 +92,11 @@ def parse_args():
                    help='Directory for CSV logs (default: log/des_sim/)')
     p.add_argument('--progress_interval', type=float, default=0.5,
                    help='Print a progress line every this many sim-time units (0 = off)')
+    p.add_argument('--weights_dir', type=str, default=None,
+                   help='Directory for per-agent weight files. Weights are loaded at '
+                        'start (if files exist) and saved at end of each run, enabling '
+                        'training across multiple runs. File per agent: '
+                        'agent_<id>_weights.json')
 
     return p.parse_args()
 
@@ -149,6 +154,7 @@ def main():
         num_to_kill=args.num_to_kill,
         enable_revive=args.enable_revive,
         revive_threshold=args.revive_threshold,
+        weights_dir=args.weights_dir,
     )
 
     print(f'Problem: {args.problem_class}  size={args.problem_size}  '
