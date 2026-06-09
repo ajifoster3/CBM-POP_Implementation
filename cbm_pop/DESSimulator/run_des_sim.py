@@ -59,6 +59,10 @@ def parse_args():
                    help='Enable time-discounted rewards')
     p.add_argument('--time_discount_lambda', type=float, default=0.1,
                    help='Time discount strength λ (default: 0.1)')
+    p.add_argument('--relative_reward',   action='store_true',
+                   help='Use relative reward: reward = (improvement - EMA) / EMA_std')
+    p.add_argument('--reward_ema_alpha',  type=float, default=0.05,
+                   help='EMA decay for relative reward baseline (default: 0.05)')
     p.add_argument('--is_free_weight_matrix', action='store_true',
                    help='Use free (all-ones) weight matrix instead of classical')
     p.add_argument('--init_method', type=str, default='voronoi',
@@ -126,6 +130,8 @@ def main():
         ucb_window=args.ucb_window,
         time_discount=args.time_discount,
         time_discount_lambda=args.time_discount_lambda,
+        is_relative_reward=args.relative_reward,
+        reward_ema_alpha=args.reward_ema_alpha,
         is_free_weight_matrix=args.is_free_weight_matrix,
         init_method='random' if args.random_init else args.init_method,
         initialise_with_heuristic=not args.random_init,

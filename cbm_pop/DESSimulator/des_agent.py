@@ -79,6 +79,8 @@ class DESAgent:
         ucb_window:            int   = 200,
         time_discount:         bool  = False,
         time_discount_lambda:  float = 0.1,
+        is_relative_reward:    bool  = False,
+        reward_ema_alpha:      float = 0.05,
         logger=None,
     ):
         self.agent_id   = agent_id
@@ -142,6 +144,11 @@ class DESAgent:
 
         self.time_discount        = time_discount
         self.time_discount_lambda = time_discount_lambda
+        self.is_relative_reward   = is_relative_reward
+        self._reward_ema_alpha    = reward_ema_alpha
+        self._reward_ema_mean     = 0.0   # EMA of improvement (-gain)
+        self._reward_ema_var      = 1.0   # EMA variance (initialised to 1 to avoid early div-by-zero)
+        self._reward_ema_n        = 0     # number of updates so far
 
         # Solution state
         self.population:              Optional[list]          = None
@@ -272,11 +279,13 @@ class DESAgent:
 
         if step is None or step.result is None:
             self.no_improvement_attempt_count += 1
+            self._update_reward_ema(0.0)   # zero improvement for null result
             return False
 
         result = self._remove_covered(step.result)
         if not result or not result[0]:
             self.no_improvement_attempt_count += 1
+            self._update_reward_ema(0.0)   # zero improvement for empty result
             return False
 
         num_uncovered = sum(1 for c in self.is_covered if not c)
@@ -290,6 +299,7 @@ class DESAgent:
 
         gain       = new_f - cur_f
         cycle_gain = new_f - cycle_start_f
+        self._update_reward_ema(gain)
         op_idx  = self._op_index(step.operator)
         self.previous_experience.append([step.condition, op_idx, gain])
 
@@ -1030,14 +1040,46 @@ class DESAgent:
             return reward / factor
         return reward * factor
 
+    def _update_reward_ema(self, gain: float) -> None:
+        """Update the exponential moving average of improvement.
+
+        Called on every operator application (gain=0 for null/empty results).
+        improvement = -gain  (positive when the solution actually got better).
+        """
+        improvement = -gain
+        delta = improvement - self._reward_ema_mean
+        self._reward_ema_mean += self._reward_ema_alpha * delta
+        self._reward_ema_var   = ((1.0 - self._reward_ema_alpha)
+                                  * (self._reward_ema_var
+                                     + self._reward_ema_alpha * delta ** 2))
+        self._reward_ema_n    += 1
+
+    def _relative_reward(self, gain: float, wall_time: float = 0.0) -> float:
+        """Compute reward relative to the running EMA baseline.
+
+        reward = (improvement - ema_mean) / (ema_std + ε)
+
+        An operator that improves better than average gets a positive reward;
+        one that improves less than average (or worsens) gets a negative reward.
+        The signal stays centred throughout the run regardless of absolute
+        improvement magnitude, so Q-values reflect relative operator quality.
+        """
+        improvement = -gain
+        std    = max(self._reward_ema_var ** 0.5, 1e-6)
+        r      = (improvement - self._reward_ema_mean) / std * self.positive_reward
+        return self._apply_time_discount(r, gain, wall_time)
+
     def _learning_step(self, condition: int, op_idx: int, improved: bool,
                        gain: float = 0.0, wall_time: float = 0.0) -> None:
         """Per-step Q-learning update (used by Q_LEARNING_STEP and Q_LEARNING_SEPARATE)."""
         q        = self.weight_matrix.weights[condition][op_idx]
         next_condition = self._next_condition_after_operator(op_idx)
         max_next = max(self.weight_matrix.weights[next_condition])
-        reward   = self.positive_reward if improved else self.negative_reward
-        reward   = self._apply_time_discount(reward, gain, wall_time)
+        if self.is_relative_reward:
+            reward = self._relative_reward(gain, wall_time)
+        else:
+            reward = self.positive_reward if improved else self.negative_reward
+            reward = self._apply_time_discount(reward, gain, wall_time)
         q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
         self.weight_matrix.weights[condition][op_idx] = max(q_new, 1e-6)
 
@@ -1051,9 +1093,9 @@ class DESAgent:
         n_int   = len(self.intensifiers)
         seen    = set()
         _improved = improved if improved is not None else self.best_local_improved
-        reward  = self.positive_reward if _improved else self.negative_reward
+        _fixed_reward = self.positive_reward if _improved else self.negative_reward
         for i in range(min_idx):
-            cond, op_col, _ = self.previous_experience[i]
+            cond, op_col, step_gain = self.previous_experience[i]
             op_col = int(op_col)
             if diversifiers_only and op_col < n_int:
                 continue
@@ -1064,6 +1106,10 @@ class DESAgent:
             q        = self.weight_matrix.weights[cond][op_col]
             next_condition = self._next_condition_after_operator(op_col)
             max_next = max(self.weight_matrix.weights[next_condition])
+            if self.is_relative_reward:
+                reward = self._relative_reward(step_gain)
+            else:
+                reward = _fixed_reward
             q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
             self.weight_matrix.weights[cond][op_col] = max(q_new, 1e-6)
 
@@ -1174,6 +1220,10 @@ class DESAgent:
         else:
             data["weight_matrix"] = [list(row) for row in self.weight_matrix.weights]
 
+        data["reward_ema_mean"] = self._reward_ema_mean
+        data["reward_ema_var"]  = self._reward_ema_var
+        data["reward_ema_n"]    = self._reward_ema_n
+
         dir_name = os.path.dirname(path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
@@ -1210,3 +1260,8 @@ class DESAgent:
             self.ucb_bandit.N = data["ucb_N"]
         else:
             self.weight_matrix.weights = [list(row) for row in data["weight_matrix"]]
+
+        if "reward_ema_mean" in data:
+            self._reward_ema_mean = data["reward_ema_mean"]
+            self._reward_ema_var  = data["reward_ema_var"]
+            self._reward_ema_n    = data["reward_ema_n"]

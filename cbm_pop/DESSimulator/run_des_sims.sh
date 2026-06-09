@@ -59,7 +59,8 @@ is-knn-enabled:,is-mimetism-enabled:,is-inject-best-on-cycle:,inject-best-prob:,
 is-append-first-task:,random-init:,init-method:,init_method:,compute-time-scale:,\
 progress-interval:,output-root:,\
 enable-kill:,kill-threshold:,num-to-kill:,enable-revive:,revive-threshold:,\
-persist-weights:,weights-dir: \
+persist-weights:,weights-dir:,\
+relative-reward:,reward-ema-alpha: \
   -- "$@") || { echo "Invalid options"; exit 1; }
 eval set -- "$PARSED"
 
@@ -107,6 +108,8 @@ while true; do
     --revive-threshold)           REVIVE_THRESHOLD="$2";        shift 2 ;;
     --persist-weights)            PERSIST_WEIGHTS="$2";         shift 2 ;;
     --weights-dir)                WEIGHTS_DIR="$2";             shift 2 ;;
+    --relative-reward)            RELATIVE_REWARD="$2";         shift 2 ;;
+    --reward-ema-alpha)           REWARD_EMA_ALPHA="$2";        shift 2 ;;
     --) shift; break ;;
     *) echo "Unexpected option: $1"; exit 1 ;;
   esac
@@ -155,6 +158,8 @@ ENABLE_REVIVE=${ENABLE_REVIVE:-"false"}
 REVIVE_THRESHOLD=${REVIVE_THRESHOLD:-0.8}
 PERSIST_WEIGHTS=${PERSIST_WEIGHTS:-"false"}
 WEIGHTS_DIR=${WEIGHTS_DIR:-""}
+RELATIVE_REWARD=${RELATIVE_REWARD:-"false"}
+REWARD_EMA_ALPHA=${REWARD_EMA_ALPHA:-0.05}
 
 require_bool() {
   local _name="$1" _value="$2"
@@ -177,6 +182,7 @@ require_bool "random_init" "$RANDOM_INIT"
 require_bool "enable_kill" "$ENABLE_KILL"
 require_bool "enable_revive" "$ENABLE_REVIVE"
 require_bool "persist_weights" "$PERSIST_WEIGHTS"
+require_bool "relative_reward" "$RELATIVE_REWARD"
 
 # ===== Directory layout =====
 ENV_SUFFIX=""
@@ -232,6 +238,8 @@ write_param_tag() {
     echo "revive_threshold=${REVIVE_THRESHOLD}"
     echo "persist_weights=${PERSIST_WEIGHTS}"
     echo "weights_dir=${WEIGHTS_DIR}"
+    echo "relative_reward=${RELATIVE_REWARD}"
+    echo "reward_ema_alpha=${REWARD_EMA_ALPHA}"
     echo "created_iso=$(date -Is)"
   } > "$_dir/setting_tag.txt"
 }
@@ -275,6 +283,8 @@ write_run_settings() {
     echo "revive_threshold=${REVIVE_THRESHOLD}"
     echo "persist_weights=${PERSIST_WEIGHTS}"
     echo "weights_dir=${WEIGHTS_DIR}"
+    echo "relative_reward=${RELATIVE_REWARD}"
+    echo "reward_ema_alpha=${REWARD_EMA_ALPHA}"
     echo "timeout_seconds=${TIMEOUT_SECONDS}"
     echo "run_uid=${_uid}"
     echo "start_iso=$(date -Is)"
@@ -345,6 +355,8 @@ build_des_cmd() {
   [[ "$ENABLE_REVIVE"        == "true"  ]] && CMD+=( --enable_revive )
   [[ "$ENABLE_REVIVE"        == "true"  ]] && CMD+=( --revive_threshold "$REVIVE_THRESHOLD" )
   [[ -n "$WEIGHTS_DIR"                 ]] && CMD+=( --weights_dir "$WEIGHTS_DIR" )
+  [[ "$RELATIVE_REWARD"  == "true"    ]] && CMD+=( --relative_reward )
+  [[ "$RELATIVE_REWARD"  == "true"    ]] && CMD+=( --reward_ema_alpha "$REWARD_EMA_ALPHA" )
   echo "${CMD[@]}"
 }
 
