@@ -146,9 +146,14 @@ class DESAgent:
         self.time_discount_lambda = time_discount_lambda
         self.is_relative_reward   = is_relative_reward
         self._reward_ema_alpha    = reward_ema_alpha
+        # Per-step EMA (intensifiers)
         self._reward_ema_mean     = 0.0   # EMA of improvement (-gain)
         self._reward_ema_var      = 1.0   # EMA variance (initialised to 1 to avoid early div-by-zero)
         self._reward_ema_n        = 0     # number of updates so far
+        # Per-cycle EMA (diversifiers) — updated once per DI cycle with total cycle gain
+        self._div_ema_mean        = 0.0
+        self._div_ema_var         = 1.0
+        self._div_ema_n           = 0
 
         # Solution state
         self.population:              Optional[list]          = None
@@ -1069,6 +1074,35 @@ class DESAgent:
         r      = (improvement - self._reward_ema_mean) / std * self.positive_reward
         return self._apply_time_discount(r, gain, wall_time)
 
+    def _update_div_reward_ema(self, cycle_gain: float) -> None:
+        """Update the diversifier EMA with the total gain across one DI cycle.
+
+        Called once per completed DI cycle.  Uses the same alpha as the
+        per-step EMA but operates at cycle granularity, so the effective
+        window is ~(1/alpha) cycles rather than steps.
+        """
+        improvement = -cycle_gain   # positive = cycle improved the solution
+        delta = improvement - self._div_ema_mean
+        self._div_ema_mean += self._reward_ema_alpha * delta
+        self._div_ema_var   = ((1.0 - self._reward_ema_alpha)
+                               * (self._div_ema_var
+                                  + self._reward_ema_alpha * delta ** 2))
+        self._div_ema_n    += 1
+
+    def _relative_div_reward(self, cycle_gain: float) -> float:
+        """Compute a diversifier reward relative to the cycle-level EMA baseline.
+
+        reward = (cycle_improvement - div_ema_mean) / (div_ema_std + ε)
+
+        A diversifier that enables a better-than-average cycle gets a positive
+        reward; one that leads to a worse-than-average cycle gets a negative
+        reward.  All diversifiers active in the same cycle share this reward,
+        reflecting that the cycle outcome is a joint result.
+        """
+        improvement = -cycle_gain
+        std = max(self._div_ema_var ** 0.5, 1e-6)
+        return (improvement - self._div_ema_mean) / std * self.positive_reward
+
     def _learning_step(self, condition: int, op_idx: int, improved: bool,
                        gain: float = 0.0, wall_time: float = 0.0) -> None:
         """Per-step Q-learning update (used by Q_LEARNING_STEP and Q_LEARNING_SEPARATE)."""
@@ -1084,10 +1118,14 @@ class DESAgent:
         self.weight_matrix.weights[condition][op_idx] = max(q_new, 1e-6)
 
     def _learning_qlearning(self, diversifiers_only: bool = False,
-                            improved: Optional[bool] = None) -> None:
+                            improved: Optional[bool] = None,
+                            cycle_reward: Optional[float] = None) -> None:
         """Cycle-end Q-learning update (Q_LEARNING and Q_LEARNING_SEPARATE diversifiers).
 
-        improved: override the reward signal; defaults to self.best_local_improved.
+        improved:      override the reward signal; defaults to self.best_local_improved.
+        cycle_reward:  when set and is_relative_reward=True, all operators in this
+                       cycle share this pre-computed reward (used for diversifiers
+                       whose reward is based on total cycle gain, not per-step gain).
         """
         min_idx = self._best_episode_cutoff()
         n_int   = len(self.intensifiers)
@@ -1107,7 +1145,7 @@ class DESAgent:
             next_condition = self._next_condition_after_operator(op_col)
             max_next = max(self.weight_matrix.weights[next_condition])
             if self.is_relative_reward:
-                reward = self._relative_reward(step_gain)
+                reward = cycle_reward if cycle_reward is not None else self._relative_reward(step_gain)
             else:
                 reward = _fixed_reward
             q_new    = q + self.lr * (reward + self.gamma_decay * max_next - q)
@@ -1136,8 +1174,13 @@ class DESAgent:
         if self.learning_method == LearningMethod.Q_LEARNING:
             self._learning_qlearning(diversifiers_only=False)
         elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE:
+            cycle_total_gain = sum(g for _, _, g in self.previous_experience)
+            self._update_div_reward_ema(cycle_total_gain)
+            div_reward = (self._relative_div_reward(cycle_total_gain)
+                          if self.is_relative_reward else None)
             self._learning_qlearning(diversifiers_only=True,
-                                     improved=self.best_cycle_start_improved)
+                                     improved=self.best_cycle_start_improved,
+                                     cycle_reward=div_reward)
         elif self.learning_method == LearningMethod.Q_LEARNING_SEPARATE_GAIN:
             self._learning_qlearning(diversifiers_only=True)
         elif self.learning_method == LearningMethod.FERREIRA:
@@ -1223,6 +1266,9 @@ class DESAgent:
         data["reward_ema_mean"] = self._reward_ema_mean
         data["reward_ema_var"]  = self._reward_ema_var
         data["reward_ema_n"]    = self._reward_ema_n
+        data["div_ema_mean"]    = self._div_ema_mean
+        data["div_ema_var"]     = self._div_ema_var
+        data["div_ema_n"]       = self._div_ema_n
 
         dir_name = os.path.dirname(path)
         if dir_name:
@@ -1265,3 +1311,7 @@ class DESAgent:
             self._reward_ema_mean = data["reward_ema_mean"]
             self._reward_ema_var  = data["reward_ema_var"]
             self._reward_ema_n    = data["reward_ema_n"]
+        if "div_ema_mean" in data:
+            self._div_ema_mean = data["div_ema_mean"]
+            self._div_ema_var  = data["div_ema_var"]
+            self._div_ema_n    = data["div_ema_n"]
