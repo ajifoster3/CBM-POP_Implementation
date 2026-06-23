@@ -185,11 +185,15 @@ require_bool "persist_weights" "$PERSIST_WEIGHTS"
 require_bool "relative_reward" "$RELATIVE_REWARD"
 
 # ===== Directory layout =====
+# Helper: compact boolean (true->T, false->F) and MAX_LONG di value
+fmt_dir_bool() { [[ "$1" == "true" ]] && echo "T" || echo "F"; }
+fmt_dir_di()   { [[ "$1" == "9223372036854775807" ]] && echo "max" || echo "$1"; }
+
 ENV_SUFFIX=""
 [[ "$ENABLE_KILL"   == "true" ]] && ENV_SUFFIX="_kill_kth_${KILL_THRESHOLD}_ntk_${NUM_TO_KILL}"
 [[ "$ENABLE_REVIVE" == "true" ]] && ENV_SUFFIX="${ENV_SUFFIX}_rev_rth_${REVIVE_THRESHOLD}"
 ENV_DIR="$RESULTS_ROOT/size_${PROBLEM_SIZE}_agents_${NUM_AGENTS}_$(slug "$PROBLEM_CLASS")${ENV_SUFFIX}"
-PARAM_DIR="$ENV_DIR/method_$(slug "$METHOD")_lr_${LR}_gamma_${GAMMA_DECAY}_pos_${POSITIVE_REWARD}_neg_${NEGATIVE_REWARD}_rho_${RHO}_eta_${ETA}_ucbc_${UCB_C}_knn_${IS_KNN_ENABLED}_mimetism_${IS_MIMETISM_ENABLED}_inject_${IS_INJECT_BEST_ON_CYCLE}_pinj_${INJECT_BEST_PROB}_append_${IS_APPEND_FIRST_TASK}_speed_${SPEED}_pop_${POP_SIZE}_di_${DI_CYCLE_LENGTH}_freewm_${IS_FREE_WEIGHT_MATRIX}_init_${INIT_METHOD}_ctscale_${COMPUTE_TIME_SCALE}_tdiscount_${TIME_DISCOUNT}_tdlambda_${TIME_DISCOUNT_LAMBDA}_relrew_${RELATIVE_REWARD}_ema_${REWARD_EMA_ALPHA}"
+PARAM_DIR="$ENV_DIR/m_$(slug "$METHOD")_lr${LR}_g${GAMMA_DECAY}_p${POSITIVE_REWARD}_n${NEGATIVE_REWARD}_rho${RHO}_eta${ETA}_uc${UCB_C}_knn$(fmt_dir_bool "$IS_KNN_ENABLED")_mim$(fmt_dir_bool "$IS_MIMETISM_ENABLED")_inj$(fmt_dir_bool "$IS_INJECT_BEST_ON_CYCLE")_pi${INJECT_BEST_PROB}_app$(fmt_dir_bool "$IS_APPEND_FIRST_TASK")_sp${SPEED}_pop${POP_SIZE}_di$(fmt_dir_di "$DI_CYCLE_LENGTH")_fwm$(fmt_dir_bool "$IS_FREE_WEIGHT_MATRIX")_ini${INIT_METHOD}_cts${COMPUTE_TIME_SCALE}_td$(fmt_dir_bool "$TIME_DISCOUNT")_tdl${TIME_DISCOUNT_LAMBDA}_rr$(fmt_dir_bool "$RELATIVE_REWARD")_ema${REWARD_EMA_ALPHA}"
 mkdir -p "$PARAM_DIR"
 
 # If --persist-weights true and no explicit --weights-dir, auto-place weights
