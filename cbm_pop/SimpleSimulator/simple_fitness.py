@@ -70,7 +70,7 @@ class SimpleFitness:
                         agent_cost += problem.cost_matrix[task_i][task_j]
 
                     if islog:
-                        log += f"returning home from task {task_order[counter + task_count - 1]} costs {initial_robot_cost_matrix[agent_idx][task_order[counter + task_count - 1]]}\n"
+                        log += f"returning home from task {task_order[counter + task_count - 1]} costs {problem.initial_robot_cost_matrix[agent_idx][task_order[counter + task_count - 1]]}\n"
                     agent_cost += problem.initial_robot_cost_matrix[agent_idx][task_order[counter + task_count - 1]]
 
                     max_cost = max(max_cost, agent_cost)
@@ -78,9 +78,17 @@ class SimpleFitness:
                     if islog:
                         log += f"max cost = {max_cost}\n"
 
-
                     total_cost += agent_cost
                     num_agents_with_tasks += 1
+
+                elif (problem.robot_to_depot_cost is not None
+                      and agent_idx < len(problem.robot_to_depot_cost)):
+                    # Robot has no remaining tasks but may not be at depot yet
+                    return_cost = float(problem.robot_to_depot_cost[agent_idx])
+                    if return_cost > 0.0 and return_cost != float('inf'):
+                        max_cost = max(max_cost, return_cost)
+                        total_cost += return_cost
+                        num_agents_with_tasks += 1
 
                 counter += task_count
 

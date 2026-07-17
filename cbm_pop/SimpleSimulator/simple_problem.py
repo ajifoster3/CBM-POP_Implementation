@@ -159,6 +159,8 @@ class SimpleProblem:
         self.task_poses = None
         self.initial_robot_cost_matrix = None
         self.current_robot_cost_matrix = None
+        self.robot_to_depot_cost = None
+        self._depot_positions = None
         self.problem_class = problem_class
 
         try:
@@ -912,13 +914,18 @@ class SimpleProblem:
         matrix  = np.full((n_total, n_tasks), float('inf'))
 
         tasks = np.array(self.task_poses, dtype=float)
+        depot_costs = np.full(len(robot_poses), float('inf'))
         for i, pose in enumerate(robot_poses):
             if pose is not None:
                 p = np.array(pose, dtype=float)
                 diff = p - tasks  # (n_tasks, 2)
                 matrix[i, :] = np.sqrt((diff ** 2).sum(axis=1))
+                if self._depot_positions is not None:
+                    depot_diff = p - self._depot_positions[i]
+                    depot_costs[i] = float(np.sqrt((depot_diff ** 2).sum()))
 
         self.current_robot_cost_matrix = matrix
+        self.robot_to_depot_cost = depot_costs
 
     def initialize_robot_initial_pose_cost_matrix(self, initial_robot_poses):
         """
@@ -929,3 +936,4 @@ class SimpleProblem:
         tasks  = np.array(self.task_poses,     dtype=float)  # (n_tasks,  2)
         diff   = robots[:, np.newaxis, :] - tasks[np.newaxis, :, :]
         self.initial_robot_cost_matrix = np.sqrt((diff ** 2).sum(axis=2))
+        self._depot_positions = robots
