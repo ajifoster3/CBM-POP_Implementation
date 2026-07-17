@@ -206,8 +206,8 @@ class DESAgent:
             self.robot_poses[i]         = pos
             self.initial_robot_poses[i] = pos
 
-        self.problem.update_robot_cost_matrix(self.robot_poses)
         self.problem.initialize_robot_initial_pose_cost_matrix(self.initial_robot_poses)
+        self.problem.update_robot_cost_matrix(self.robot_poses)
 
         self.population = self._generate_population()
         self.current_parent_idx, self.current_solution = self._select_solution()

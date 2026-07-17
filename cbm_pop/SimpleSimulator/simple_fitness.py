@@ -85,7 +85,7 @@ class SimpleFitness:
                       and agent_idx < len(problem.robot_to_depot_cost)):
                     # Robot has no remaining tasks but may not be at depot yet
                     return_cost = float(problem.robot_to_depot_cost[agent_idx])
-                    if return_cost > 0.0 and return_cost != float('inf'):
+                    if return_cost != float('inf'):
                         max_cost = max(max_cost, return_cost)
                         total_cost += return_cost
                         num_agents_with_tasks += 1
