@@ -34,7 +34,7 @@ class Fitness:
         return max_cost
 
     @staticmethod
-    def fitness_function_robot_pose(solution, cost_matrix, robot_cost_matrix, initial_robot_cost_matrix, alpha=0.5, islog=False):
+    def fitness_function_robot_pose(solution, cost_matrix, robot_cost_matrix, initial_robot_cost_matrix, alpha=0.5, islog=False, robot_to_depot_cost=None):
         """
         Computes a weighted sum of the maximum path cost and the average path cost for agents in the solution.
         :param solution: Solution to be calculated (task_order, agent_task_counts)
@@ -42,6 +42,9 @@ class Fitness:
         :param robot_cost_matrix: Cost matrix from robot positions to tasks
         :param initial_robot_cost_matrix: Cost matrix from tasks to initial robot positions
         :param alpha: Weighting factor between max cost and average cost (0 <= alpha <= 1)
+        :param robot_to_depot_cost: Optional per-robot vector of current-position→depot distances.
+            When provided, idle robots (task_count==0) contribute their depot-return cost to the
+            max, the sum, and the denominator (inf entries, i.e. failed robots, are excluded).
         :return: Weighted sum of max cost and average cost
         """
         try:
@@ -77,9 +80,15 @@ class Fitness:
                     if islog:
                         log += f"max cost = {max_cost}\n"
 
-
                     total_cost += agent_cost
                     num_agents_with_tasks += 1
+
+                elif robot_to_depot_cost is not None and agent_idx < len(robot_to_depot_cost):
+                    return_cost = float(robot_to_depot_cost[agent_idx])
+                    if return_cost != float('inf'):
+                        max_cost = max(max_cost, return_cost)
+                        total_cost += return_cost
+                        num_agents_with_tasks += 1
 
                 counter += task_count
 

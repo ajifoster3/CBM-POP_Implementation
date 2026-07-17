@@ -874,6 +874,7 @@ class DESAgent:
                 self.problem.cost_matrix,
                 list(self.problem.current_robot_cost_matrix),
                 self.problem.initial_robot_cost_matrix,
+                robot_to_depot_cost=self.problem.robot_to_depot_cost,
             )
             # Discard any result that dropped tasks (operator bug defence)
             if result is None or not result[0] or len(result[0]) < expected_tasks:
