@@ -434,26 +434,34 @@ class DESSimulation:
         })
 
     def _execute_return_to_depot(self) -> None:
-        """Advance sim_time by the longest return leg back to each robot's start."""
+        """Advance sim_time to when the last robot arrives back at its depot.
+
+        Each robot departs for its depot as soon as it finishes its last task
+        (robot._leg_start_time after _on_robot_arrival clears the goal), so
+        depot arrival times are computed independently per robot.
+        """
         import math
-        max_return = 0.0
+        max_depot_arrival = self.sim_time
         for robot in self.robots:
             if not robot.is_alive:
                 continue
-            pos = robot.get_position(self.sim_time)
+            # _leg_start_time is the moment the robot finished its last task.
+            depart_time = robot._leg_start_time
+            pos = robot._leg_start_pos
             start = self.robot_starts[robot.robot_id]
             dist = math.hypot(pos[0] - start[0], pos[1] - start[1])
             return_time = dist / robot.speed if robot.speed > 0 else 0.0
+            depot_arrival = depart_time + return_time
             if self.logger:
                 self.logger.log_robot_leg(
-                    self.sim_time, robot.robot_id,
+                    depart_time, robot.robot_id,
                     pos[0], pos[1],
                     start[0], start[1],
                     -2,
-                    self.sim_time + return_time,
+                    depot_arrival,
                 )
-            max_return = max(max_return, return_time)
-        self.sim_time += max_return
+            max_depot_arrival = max(max_depot_arrival, depot_arrival)
+        self.sim_time = max_depot_arrival
 
     # ------------------------------------------------------------------ #
     # Kill / Revive                                                        #
